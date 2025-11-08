@@ -5,7 +5,17 @@ import {
   parseDeckToInfos,
   type CardInfo,
 } from "@/helpers/CardInfoHelper";
-import { imageProcessor } from "@/helpers/imageProcessor";
+import {
+  addBleedEdgeSmartly,
+  computeCardPreviewPixels,
+  createPreviewDataUrl,
+  getLocalBleedImageUrl,
+  processWithConcurrency,
+  makeUploadedFileToken,
+  revokeIfBlobUrl,
+  resolveImageProcessingConcurrency,
+  PREVIEW_CARD_DPI,
+} from "@/helpers/ImageHelper";
 import {
   getMpcImageUrl,
   inferCardNameFromFilename,
@@ -23,10 +33,11 @@ import {
   ListItem,
   Select,
   Textarea,
-  Tooltip,
 } from "flowbite-react";
-import { ExternalLink, HelpCircle } from "lucide-react";
-import React, { useState } from "react";
+import { ExternalLink } from "lucide-react";
+import React, { useCallback, useState } from "react";
+
+const HIGH_QUALITY_PREVIEW_DPI = 300;
 
 async function readText(file: File): Promise<string> {
   return new Promise((resolve) => {
@@ -42,6 +53,7 @@ export function UploadSection() {
   const cards = useCardsStore((state) => state.cards);
 
   const setLoadingTask = useLoadingStore((state) => state.setLoadingTask);
+  const setLoadingProgress = useLoadingStore((state) => state.setLoadingProgress);
   const appendCards = useCardsStore((state) => state.appendCards);
   const setCards = useCardsStore((state) => state.setCards);
   const setSelectedImages = useCardsStore((state) => state.setSelectedImages);
@@ -54,40 +66,72 @@ export function UploadSection() {
   const appendOriginalSelectedImages = useCardsStore(
     (state) => state.appendOriginalSelectedImages
   );
+  const appendUploadedFiles = useCardsStore((state) => state.appendUploadedFiles);
+  const setUploadedFiles = useCardsStore((state) => state.setUploadedFiles);
+  const removeCardsByUuid = useCardsStore((state) => state.removeCardsByUuid);
 
   const globalLanguage = useCardsStore((s) => s.globalLanguage ?? "en");
-  const setGlobalLanguage = useCardsStore(
-    (s) => s.setGlobalLanguage ?? (() => {})
+  const setGlobalLanguage = useCardsStore((s) => s.setGlobalLanguage ?? (() => { }));
+  const columns = useSettingsStore((state) => state.columns);
+  const rows = useSettingsStore((state) => state.rows);
+  const useExportBatching = useSettingsStore((state) => state.useExportBatching);
+  const setUseExportBatching = useSettingsStore((state) => state.setUseExportBatching);
+
+  const maybeEnableBatching = useCallback(
+    (totalCards: number) => {
+      const perPage = Math.max(1, columns * rows || 0);
+      if (perPage <= 0) return;
+      const totalPages = Math.ceil(totalCards / perPage);
+      if (totalPages > 20) {
+        if (!useExportBatching) {
+          setUseExportBatching(true);
+        }
+      }
+    },
+    [columns, rows, useExportBatching, setUseExportBatching]
   );
 
-  async function processToWithBleed(
-    srcBase64: string,
+  async function buildPreviewFromFile(
+    file: File,
     opts: { hasBakedBleed: boolean }
   ) {
-    const { processedBlob, error } = await imageProcessor.process({
-      uuid: crypto.randomUUID(),
-      url: srcBase64,
-      bleedEdgeWidth,
-      unit: "mm",
-      apiBase: API_BASE,
-      isUserUpload: true,
-      hasBakedBleed: opts.hasBakedBleed,
-    });
-
-    if (error) {
-      throw new Error(error);
+    const tempUrl = URL.createObjectURL(file);
+    let processedUrl: string | null = null;
+    try {
+      processedUrl = await addBleedEdgeSmartly(tempUrl, bleedEdgeWidth, {
+        unit: "mm",
+        bleedEdgeWidth,
+        hasBakedBleed: opts.hasBakedBleed,
+      });
+      const useHighQuality = useSettingsStore.getState().useHighQualityPreviews;
+      const dpi = useHighQuality ? HIGH_QUALITY_PREVIEW_DPI : PREVIEW_CARD_DPI;
+      const { width, height } = computeCardPreviewPixels(bleedEdgeWidth, dpi);
+      return await createPreviewDataUrl(processedUrl, {
+        maxWidth: width,
+        maxHeight: height,
+        mimeType: "image/jpeg",
+        quality: 0.82,
+        background: "#FFFFFF",
+      });
+    } finally {
+      URL.revokeObjectURL(tempUrl);
+      revokeIfBlobUrl(processedUrl);
     }
-
-    const withBleedBase64 = URL.createObjectURL(processedBlob);
-    return { originalBase64: srcBase64, withBleedBase64 };
   }
 
   async function addUploadedFiles(
     files: FileList,
-    opts: { hasBakedBleed: boolean }
+    opts: { hasBakedBleed: boolean; signal?: AbortSignal }
   ) {
+    if (opts.signal?.aborted) {
+      throw new DOMException("Upload cancelled", "AbortError");
+    }
     const fileArray = Array.from(files);
     const startIndex = cards.length;
+
+    if (fileArray.length > 0) {
+      setLoadingProgress(0);
+    }
 
     const newCards: CardOption[] = fileArray.map((file, i) => ({
       name:
@@ -101,45 +145,91 @@ export function UploadSection() {
 
     appendCards(newCards);
 
+    const newCardIds = newCards.map((card) => card.uuid);
     const originalsUpdate: Record<string, string> = {};
     const processedUpdate: Record<string, string> = {};
+    const uploadedFilesUpdate: Record<string, File> = {};
 
-    await Promise.all(
-      fileArray.map(async (file, i) => {
-        const base64 = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.readAsDataURL(file);
-        });
+    let processedCount = 0;
+    const totalFiles = fileArray.length;
+    const concurrency = resolveImageProcessingConcurrency();
+    let committed = false;
 
-        const { originalBase64, withBleedBase64 } = await processToWithBleed(
-          base64,
-          opts
-        );
+    try {
+      await processWithConcurrency(
+        fileArray,
+        async (file: File, i: number) => {
+          if (opts.signal?.aborted) {
+            return;
+          }
 
-        const id = newCards[i].uuid;
-        originalsUpdate[id] = originalBase64;
-        processedUpdate[id] = withBleedBase64;
-      })
-    );
+          const id = newCards[i].uuid;
+          uploadedFilesUpdate[id] = file;
+          originalsUpdate[id] = makeUploadedFileToken(id);
+          try {
+            processedUpdate[id] = await buildPreviewFromFile(file, opts);
+          } catch (err) {
+            console.warn(`[Upload] Failed to process ${file.name}:`, err);
+          } finally {
+            if (totalFiles > 0) {
+              processedCount += 1;
+              setLoadingProgress((processedCount / totalFiles) * 100);
+            }
+          }
+        },
+        concurrency,
+        opts.signal
+      );
 
-    appendOriginalSelectedImages(originalsUpdate);
-    appendSelectedImages(processedUpdate);
+      if (opts.signal?.aborted) {
+        throw new DOMException("Upload cancelled", "AbortError");
+      }
+
+      appendUploadedFiles(uploadedFilesUpdate);
+      appendOriginalSelectedImages(originalsUpdate);
+      appendSelectedImages(processedUpdate);
+
+      if (fileArray.length > 0) {
+        setLoadingProgress(100);
+      }
+
+      maybeEnableBatching(cards.length + newCards.length);
+      committed = true;
+    } finally {
+      if (!committed && newCardIds.length) {
+        removeCardsByUuid(newCardIds);
+      }
+    }
   }
 
   const handleUploadMpcFill = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-    setLoadingTask("Uploading Images");
+    const files = e.target.files;
+    if (!files || !files.length) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const cancelHandler = () => controller.abort();
+    setLoadingTask("Uploading Images", {
+      onCancel: cancelHandler,
+      cancelLabel: "Cancel upload",
+    });
 
     try {
-      const files = e.target.files;
-      if (files && files.length) {
-        await addUploadedFiles(files, { hasBakedBleed: true });
+      await addUploadedFiles(files, {
+        hasBakedBleed: true,
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (controller.signal.aborted || err?.name === "AbortError") {
+        // Swallow cancellation
+      } else {
+        console.error("[Upload MPC Fill] Error", err);
       }
     } finally {
       if (e.target) e.target.value = "";
-
       setLoadingTask(null);
     }
   };
@@ -147,48 +237,28 @@ export function UploadSection() {
   const handleUploadStandard = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-    setLoadingTask("Uploading Images");
+    const files = e.target.files;
+    if (!files || !files.length) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const cancelHandler = () => controller.abort();
+    setLoadingTask("Uploading Images", {
+      onCancel: cancelHandler,
+      cancelLabel: "Cancel upload",
+    });
     try {
-      const files = e.target.files;
-      if (!files || !files.length) return;
-
-      const fileArray = Array.from(files);
-      const startIndex = cards.length;
-
-      const newCards: CardOption[] = fileArray.map((_, i) => ({
-        name: `Custom Art ${startIndex + i + 1}`,
-        imageUrls: [],
-        uuid: crypto.randomUUID(),
-        isUserUpload: true,
+      await addUploadedFiles(files, {
         hasBakedBleed: false,
-      }));
-
-      appendCards(newCards);
-
-      const originalsUpdate: Record<string, string> = {};
-      const processedUpdate: Record<string, string> = {};
-
-      await Promise.all(
-        fileArray.map(async (file, i) => {
-          const base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(file);
-          });
-
-          const { originalBase64, withBleedBase64 } = await processToWithBleed(
-            base64,
-            { hasBakedBleed: false }
-          );
-
-          const id = newCards[i].uuid;
-          originalsUpdate[id] = originalBase64;
-          processedUpdate[id] = withBleedBase64;
-        })
-      );
-
-      appendOriginalSelectedImages(originalsUpdate);
-      appendSelectedImages(processedUpdate);
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (controller.signal.aborted || err?.name === "AbortError") {
+        // cancellation, ignore
+      } else {
+        console.error("[Upload] Error", err);
+      }
     } finally {
       if (e.target) e.target.value = "";
       setLoadingTask(null);
@@ -205,7 +275,7 @@ export function UploadSection() {
       const items =
         schemaItems && schemaItems.length ? schemaItems : parseMpcText(raw);
 
-      const newCards: CardOption[] = [];
+  const newCards: CardOption[] = [];
       const newOriginals: Record<string, string> = {};
 
       for (const it of items) {
@@ -233,6 +303,7 @@ export function UploadSection() {
       }
 
       appendCards(newCards);
+  maybeEnableBatching(cards.length + newCards.length);
       if (Object.keys(newOriginals).length) {
         appendOriginalSelectedImages(newOriginals);
       }
@@ -242,64 +313,75 @@ export function UploadSection() {
   };
 
   const handleSubmit = async () => {
+    const infos = parseDeckToInfos(deckText || "");
+    if (!infos.length) {
+      return;
+    }
+
+    const controller = new AbortController();
+    const cancelHandler = () => controller.abort();
+    setLoadingTask("Fetching cards", {
+      onCancel: cancelHandler,
+      cancelLabel: "Cancel import",
+    });
+
+    const uniqueMap = new Map<string, CardInfo>();
+    for (const ci of infos) uniqueMap.set(cardKey(ci), ci);
+    const uniqueInfos = Array.from(uniqueMap.values());
+    const uniqueNames = Array.from(new Set(uniqueInfos.map((ci) => ci.name)));
+
+    let appendedCardIds: string[] = [];
+
     try {
-      setLoadingTask("Fetching cards");
-      const infos = parseDeckToInfos(deckText || "");
-      if (!infos.length) {
-        setLoadingTask(null);
-        return;
-      }
-
-      const uniqueMap = new Map<string, CardInfo>();
-      for (const ci of infos) uniqueMap.set(cardKey(ci), ci);
-      const uniqueInfos = Array.from(uniqueMap.values());
-      const uniqueNames = Array.from(new Set(uniqueInfos.map((ci) => ci.name)));
-
       try {
-        await axios.delete(`${API_BASE}/api/cards/images`, { timeout: 15000 });
+        await axios.delete(`${API_BASE}/api/cards/images`, {
+          timeout: 15000,
+          signal: controller.signal,
+        });
       } catch (e) {
+        if (controller.signal.aborted) {
+          throw new DOMException("Import cancelled", "AbortError");
+        }
         console.warn("[FetchCards] DELETE failed (continuing):", e);
       }
 
-      const response = await axios.post<CardOption[]>(
-        `${API_BASE}/api/cards/images`,
-
-        {
-          cardQueries: uniqueInfos,
-
-          cardNames: uniqueNames,
-
-          cardArt: "art",
-
-          language: globalLanguage,
+      let response: { data: CardOption[] } | null = null;
+      try {
+        response = await axios.post<CardOption[]>(
+          `${API_BASE}/api/cards/images`,
+          {
+            cardQueries: uniqueInfos,
+            cardNames: uniqueNames,
+            cardArt: "art",
+            language: globalLanguage,
+          },
+          { timeout: 800000, signal: controller.signal }
+        );
+      } catch (e: any) {
+        if (controller.signal.aborted || e?.code === "ERR_CANCELED" || e?.name === "CanceledError") {
+          throw new DOMException("Import cancelled", "AbortError");
         }
-      );
+        console.error("[FetchCards] POST failed:", e);
+        throw new Error(
+          e?.response?.data?.error ||
+            e?.message ||
+            "Failed to fetch cards. Check network/CORS."
+        );
+      }
 
-      setLoadingTask(null); // Hide loader immediately after fetch
+      if (controller.signal.aborted) {
+        throw new DOMException("Import cancelled", "AbortError");
+      }
 
-      const fetchedCards = response.data;
-
-      const fetchErrors: string[] = []; // For compatibility with later logic
-
-      if (!fetchedCards || !fetchedCards.length) {
-        if (fetchErrors.length > 0) {
-          throw new Error(
-            `Failed to find images for the following cards: ${fetchErrors.join(
-              ", "
-            )}`
-          );
-        }
+      const data = Array.isArray(response?.data) ? response!.data : [];
+      if (!data.length) {
         throw new Error("No images found for the provided list.");
       }
 
       const optionByKey: Record<string, CardOption> = {};
-      for (const opt of fetchedCards) {
+      for (const opt of data) {
         if (!opt?.name) continue;
-
-        const k = `${opt.name.toLowerCase()}|${
-          opt.set ?? ""
-        }|${opt.number ?? ""}`;
-
+        const k = `${opt.name.toLowerCase()}|${opt.set ?? ""}|${opt.number ?? ""}`;
         optionByKey[k] = opt;
         const nameOnlyKey = `${opt.name.toLowerCase()}||`;
         if (!optionByKey[nameOnlyKey]) optionByKey[nameOnlyKey] = opt;
@@ -309,159 +391,158 @@ export function UploadSection() {
         const k = cardKey(ci);
         const fallbackK = `${ci.name.toLowerCase()}||`;
         const card = optionByKey[k] ?? optionByKey[fallbackK];
+
+        if (!card) {
+          return {
+            name: ci.name,
+            imageUrls: [],
+            uuid: crypto.randomUUID(),
+            isUserUpload: false,
+          } as CardOption;
+        }
+
+        // Ensure imageUrls is populated from faces if needed
+        let imageUrls = card.imageUrls ?? [];
+        if (imageUrls.length === 0 && card.faces && card.faces.length > 0) {
+          imageUrls = card.faces.map(face => face.imageUrl).filter(Boolean);
+        }
+
         return {
-          ...(card ?? { name: ci.name, imageUrls: [] }),
+          ...card,
+          imageUrls,
           uuid: crypto.randomUUID(),
+          currentFaceIndex: 0,
         } as CardOption;
       });
 
       appendCards(expandedCards);
+      appendedCardIds = expandedCards.map((card) => card.uuid);
+      maybeEnableBatching(cards.length + expandedCards.length);
+
+      if (controller.signal.aborted) {
+        throw new DOMException("Import cancelled", "AbortError");
+      }
 
       const newOriginals: Record<string, string> = {};
       for (const card of expandedCards) {
+        let firstImageUrl: string | undefined;
+
+        // Try to get image from imageUrls first
         if (card?.imageUrls?.length > 0) {
-          newOriginals[card.uuid] = card.imageUrls[0];
+          firstImageUrl = card.imageUrls[0];
+        }
+        // Fallback to faces array for double-faced cards
+        else if (card?.faces && card.faces.length > 0) {
+          firstImageUrl = card.faces[0]?.imageUrl;
+        }
+
+        if (firstImageUrl) {
+          newOriginals[card.uuid] = firstImageUrl;
         }
       }
-      appendOriginalSelectedImages(newOriginals);
+      if (Object.keys(newOriginals).length) {
+        appendOriginalSelectedImages(newOriginals);
+      }
 
-      const workerPool: Worker[] = [];
-      try {
-        const imageJobs = Object.entries(newOriginals);
-        const totalToProcess = imageJobs.length;
-
-        if (totalToProcess === 0) {
-          setDeckText("");
-
-          return;
-        }
-
-        const processed: Record<string, string> = {};
-
-        const errored = new Set<string>();
-        await new Promise<void>((resolve) => {
-          const taskQueue = [...imageJobs];
-          const maxWorkers = Math.max(
-            1,
-            (navigator.hardwareConcurrency || 4) - 1
-          );
-          let activeWorkers = 0;
-
-          const run = () => {
-            while (taskQueue.length > 0 && activeWorkers < maxWorkers) {
-              const worker = new Worker(
-                new URL("../helpers/bleed.worker.ts", import.meta.url),
-                { type: "module" }
-              );
-              workerPool.push(worker);
-              activeWorkers++;
-
-              const [uuid, url] = taskQueue.shift()!;
-
-              worker.onmessage = (e: MessageEvent) => {
-                const { processedBlob, error } = e.data;
-                if (error) {
-                  console.error(`Error processing image ${uuid}:`, error);
-                  errored.add(uuid);
-                } else {
-                  const objectUrl = URL.createObjectURL(processedBlob);
-                  processed[uuid] = objectUrl;
-                }
-
-                worker.terminate();
-                activeWorkers--;
-
-                if (taskQueue.length === 0 && activeWorkers === 0) {
-                  resolve();
-                } else {
-                  run();
-                }
-              };
-
-              worker.onerror = (error) => {
-                worker.terminate();
-                activeWorkers--;
-                // Don't reject, as other images might still be processing
-                console.error("Worker error:", error);
-                if (taskQueue.length === 0 && activeWorkers === 0) {
-                  resolve(); // Or reject, depending on desired behavior
-                }
-              };
-
-              const card = expandedCards.find((c) => c.uuid === uuid);
-
-              worker.postMessage({
-                uuid,
-                url,
-                bleedEdgeWidth,
-                unit: "mm",
-                apiBase: API_BASE,
-                isUserUpload: card?.isUserUpload,
-                hasBakedBleed: card?.hasBakedBleed,
-              });
-            }
-          };
-
-          run();
+      const processed: Record<string, string> = {};
+      const useHighQuality = useSettingsStore.getState().useHighQualityPreviews;
+      const dpi = useHighQuality ? HIGH_QUALITY_PREVIEW_DPI : PREVIEW_CARD_DPI;
+      const previewDims = computeCardPreviewPixels(bleedEdgeWidth, dpi);
+      const totalPreviews = Object.keys(newOriginals).length;
+      let completed = 0;
+      if (totalPreviews > 0) {
+        setLoadingTask("Processing Images", {
+          onCancel: cancelHandler,
+          cancelLabel: "Cancel import",
         });
-
-        if (Object.keys(processed).length) {
-          appendSelectedImages(processed);
-        }
-      } finally {
-        workerPool.forEach((w) => w.terminate());
+        setLoadingProgress(0);
       }
+
+      for (const [uuid, url] of Object.entries(newOriginals)) {
+        if (controller.signal.aborted) {
+          throw new DOMException("Import cancelled", "AbortError");
+        }
+
+        let bleedImageUrl: string | null = null;
+        try {
+          const proxiedUrl = getLocalBleedImageUrl(url);
+          bleedImageUrl = await addBleedEdgeSmartly(proxiedUrl, bleedEdgeWidth, {
+            unit: "mm",
+            bleedEdgeWidth,
+            hasBakedBleed: false,
+          });
+          processed[uuid] = await createPreviewDataUrl(bleedImageUrl, {
+            maxWidth: previewDims.width,
+            maxHeight: previewDims.height,
+            mimeType: "image/jpeg",
+            quality: 0.82,
+            background: "#FFFFFF",
+          });
+        } catch (e) {
+          console.warn(`[Bleed] Failed for ${uuid}:`, e);
+        } finally {
+          revokeIfBlobUrl(bleedImageUrl);
+          if (totalPreviews > 0) {
+            completed += 1;
+            setLoadingProgress((completed / totalPreviews) * 100);
+          }
+        }
+      }
+
+      if (controller.signal.aborted) {
+        throw new DOMException("Import cancelled", "AbortError");
+      }
+
+      if (totalPreviews > 0) {
+        setLoadingProgress(100);
+      }
+      if (Object.keys(processed).length) appendSelectedImages(processed);
 
       setDeckText("");
     } catch (err: any) {
-      setLoadingTask(null); // Ensure loader is hidden on error
+      if (
+        controller.signal.aborted ||
+        err?.name === "AbortError" ||
+        err?.code === "ERR_CANCELED"
+      ) {
+        if (appendedCardIds.length) {
+          removeCardsByUuid(appendedCardIds);
+        }
+        return;
+      }
+
       console.error("[FetchCards] Error:", err);
       alert(err?.message || "Something went wrong while fetching cards.");
+      if (appendedCardIds.length) {
+        removeCardsByUuid(appendedCardIds);
+      }
+    } finally {
+      setLoadingTask(null);
     }
   };
-
-  const [showClearConfirmModal, setShowClearConfirmModal] = useState(false);
 
   const handleClear = async () => {
-    if (cards.length === 0) {
-      // If no cards, just clear the state without showing the modal
-      // The confirmClear function already handles the actual clearing logic
-      await confirmClear(); // Call confirmClear directly
-      setShowClearConfirmModal(false); // Ensure modal is hidden
-    } else {
-      setShowClearConfirmModal(true);
-    }
-  };
-
-  const confirmClear = async () => {
     setLoadingTask("Clearing Images");
 
     try {
-      const hadCards = cards.length > 0;
       setCards([]);
       setSelectedImages({});
       setOriginalSelectedImages({});
+      setUploadedFiles({});
 
-      if (hadCards) {
-        try {
-          await axios.delete(`${API_BASE}/api/cards/images`, {
-            timeout: 15000,
-          });
-        } catch (e) {
-          console.warn(
-            "[Clear] Server cache clear failed (UI already cleared):",
-            e
-          );
-        }
+      try {
+        await axios.delete(`${API_BASE}/api/cards/images`, { timeout: 15000 });
+      } catch (e) {
+        console.warn("[Clear] Server cache clear failed (UI already cleared):", e);
       }
     } catch (err: any) {
       console.error("[Clear] Error:", err);
       alert(err?.message || "Failed to clear images.");
     } finally {
       setLoadingTask(null);
-      setShowClearConfirmModal(false);
     }
   };
+
 
   return (
     <div className="w-1/5 dark:bg-gray-700 bg-gray-100 flex flex-col">
@@ -565,7 +646,11 @@ export function UploadSection() {
 
             <Textarea
               className="h-64"
-              placeholder={`1x Sol Ring\n2x Counterspell\nFor specific art include set / CN\neg. Strionic Resonator (lcc)\nor Repurposing Bay (dft) 380`}
+              placeholder={`1x Sol Ring
+2x Counterspell
+For specific art include set / CN
+eg. Strionic Resonator (lcc)
+or Repurposing Bay (dft) 380`}
               value={deckText}
               onChange={(e) => setDeckText(e.target.value)}
             />
@@ -583,10 +668,8 @@ export function UploadSection() {
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <h6 className="font-medium dark:text-white">Language</h6>
-              <Tooltip content="Used for Scryfall lookups">
-                <HelpCircle className="w-4 h-4 text-gray-400 hover:text-gray-500 dark:text-gray-500 dark:hover:text-gray-400 cursor-pointer" />
-              </Tooltip>
             </div>
+            <HelperText>Used for Scryfall lookups</HelperText>
 
             <Select
               className="w-full rounded-md bg-gray-300 dark:bg-gray-600 my-2 text-sm text-gray-900 dark:text-white hover:bg-gray-300 dark:hover:bg-gray-500"
@@ -618,35 +701,6 @@ export function UploadSection() {
 
         <HR className="my-0 dark:bg-gray-500" />
       </div>
-
-      {showClearConfirmModal && (
-        <div className="fixed inset-0 z-50 bg-gray-900/50 flex items-center justify-center">
-          <div className="bg-white dark:bg-gray-800 p-6 rounded shadow-md w-96 text-center">
-            <div className="mb-4 text-lg font-semibold text-gray-800 dark:text-white">
-              Confirm Clear Cards
-            </div>
-            <div className="mb-5 text-lg font-normal text-gray-500 dark:text-gray-400">
-              Are you sure you want to clear all cards? This action cannot be
-              undone.
-            </div>
-            <div className="flex justify-center gap-4">
-              <Button
-                color="failure"
-                className="dark:bg-red-600 dark:hover:bg-red-700 text-white"
-                onClick={confirmClear}
-              >
-                Yes, I'm sure
-              </Button>
-              <Button
-                color="gray"
-                onClick={() => setShowClearConfirmModal(false)}
-              >
-                No, cancel
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
