@@ -12,61 +12,62 @@ import {
 } from "@dnd-kit/sortable";
 import { Button, Label } from "flowbite-react";
 import { Copy, Trash } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
 import fullLogo from "../assets/fullLogo.png";
 import CardCellLazy from "../components/CardCellLazy";
 import EdgeCutLines from "../components/FullPageGuides";
 import SortableCard from "../components/SortableCard";
-import { getBleedInPixels } from "../helpers/ImageHelper";
-import { useImageProcessing } from "../hooks/useImageProcessing";
 import {
-  useArtworkModalStore,
-  useCardsStore,
-  useSettingsStore,
-} from "../store";
+  addBleedEdgeSmartly,
+  getBleedInPixels,
+  isUploadedFileToken,
+  makeUploadedFileToken,
+  urlToDataUrl,
+} from "../helpers/ImageHelper";
+import { useImageProcessing } from "../hooks/useImageProcessing";
+import { usePageViewState } from "../hooks/usePageViewState";
 import type { CardOption } from "../types/Card";
-import { ArtworkModal } from "./ArtworkModal";
+
+const ArtworkModal = lazy(() => import("./ArtworkModal").then(module => ({ default: module.ArtworkModal })));
 
 const unit = "mm";
 const baseCardWidthMm = 63;
 const baseCardHeightMm = 88;
 
 export function PageView() {
-  const pageSizeUnit = useSettingsStore((state) => state.pageSizeUnit);
-  const pageWidth = useSettingsStore((state) => state.pageWidth);
-  const pageHeight = useSettingsStore((state) => state.pageHeight);
-  const columns = useSettingsStore((state) => state.columns);
-  const rows = useSettingsStore((state) => state.rows);
-  const bleedEdgeWidth = useSettingsStore((state) => state.bleedEdgeWidth);
-  const zoom = useSettingsStore((state) => state.zoom);
+  const { settings, cardsState, cardsActions, openArtworkModal } = usePageViewState();
+  const {
+    pageSizeUnit,
+    pageWidth,
+    pageHeight,
+    columns,
+    rows,
+    bleedEdgeWidth,
+    zoom,
+    cardSpacingMm,
+    viewMode,
+    setViewMode,
+    customCardbackUrl,
+    customCardbackHasBleed,
+    disableBackPageGuides
+  } = settings;
+  const { cards, selectedImages, selectedBackFaceImages, originalSelectedImages, uploadedFiles } = cardsState;
+  const {
+    setCards,
+    setSelectedImages,
+    setOriginalSelectedImages,
+    appendSelectedImages,
+    appendOriginalSelectedImages,
+    appendUploadedFiles,
+  } = cardsActions;
 
   const pageRef = useRef<HTMLDivElement>(null);
-  const cards = useCardsStore((state) => state.cards);
-  const selectedImages = useCardsStore((state) => state.selectedImages);
-  const originalSelectedImages = useCardsStore(
-    (state) => state.originalSelectedImages
-  );
-  const openArtworkModal = useArtworkModalStore((state) => state.openModal);
-
-  const setCards = useCardsStore((state) => state.setCards);
-  const setSelectedImages = useCardsStore((state) => state.setSelectedImages);
-  const setOriginalSelectedImages = useCardsStore(
-    (state) => state.setOriginalSelectedImages
-  );
-  const appendSelectedImages = useCardsStore(
-    (state) => state.appendSelectedImages
-  );
-  const appendOriginalSelectedImages = useCardsStore(
-    (state) => state.appendOriginalSelectedImages
-  );
 
   const bleedPixels = getBleedInPixels(bleedEdgeWidth, unit);
   const guideOffset = `${(bleedPixels * (25.4 / 300)).toFixed(3)}mm`;
   const totalCardWidth = baseCardWidthMm + bleedEdgeWidth * 2;
   const totalCardHeight = baseCardHeightMm + bleedEdgeWidth * 2;
   const pageCapacity = columns * rows;
-  // --- near your other settings selectors ---
-  const cardSpacingMm = useSettingsStore((state) => state.cardSpacingMm); // NEW
 
   const gridWidthMm =
     totalCardWidth * columns + Math.max(0, columns - 1) * cardSpacingMm;
@@ -87,31 +88,46 @@ export function PageView() {
     return () => window.removeEventListener("click", handler);
   }, []);
 
-  function duplicateCard(index: number) {
+  const duplicateCard = useCallback((index: number) => {
     const cardToCopy = cards[index];
-    const newCard = { ...cardToCopy, uuid: crypto.randomUUID() };
+    if (!cardToCopy) return;
+
+    const newUuid = crypto.randomUUID();
+    const newCard = { ...cardToCopy, uuid: newUuid };
 
     const newCards = [...cards];
     newCards.splice(index + 1, 0, newCard);
     setCards(newCards);
 
     const original = originalSelectedImages[cardToCopy.uuid];
+    if (original) {
+      appendOriginalSelectedImages({
+        [newUuid]: isUploadedFileToken(original)
+          ? makeUploadedFileToken(newUuid)
+          : original,
+      });
+    }
+
     const processed = selectedImages[cardToCopy.uuid];
+    if (processed) {
+      appendSelectedImages({
+        [newUuid]: processed,
+      });
+    }
 
-    appendOriginalSelectedImages({
-      [newCard.uuid]: original,
-    });
+    if (original && isUploadedFileToken(original)) {
+      const file = uploadedFiles[cardToCopy.uuid];
+      if (file) {
+        appendUploadedFiles({ [newUuid]: file });
+      }
+    }
+  }, [cards, setCards, originalSelectedImages, appendOriginalSelectedImages, selectedImages, appendSelectedImages, uploadedFiles, appendUploadedFiles]);
 
-    appendSelectedImages({
-      [newCard.uuid]: processed,
-    });
-  }
-
-  function deleteCard(index: number) {
+  const deleteCard = useCallback((index: number) => {
     const cardToRemove = cards[index];
     const cardUuid = cardToRemove.uuid;
 
-    const newCards = cards.filter((_, i) => i !== index);
+    const newCards = cards.filter((_: CardOption, i: number) => i !== index);
 
     const { [cardUuid]: _, ...newSelectedImages } = selectedImages;
     const { [cardUuid]: __, ...newOriginalSelectedImages } =
@@ -120,15 +136,15 @@ export function PageView() {
     setCards(newCards);
     setSelectedImages(newSelectedImages);
     setOriginalSelectedImages(newOriginalSelectedImages);
-  }
+  }, [cards, selectedImages, originalSelectedImages, setCards, setSelectedImages, setOriginalSelectedImages]);
 
-  const reorderImageMap = (
+  const reorderImageMap = useCallback((
     cards: CardOption[],
     oldIndex: number,
     newIndex: number,
     map: Record<string, string>
   ) => {
-    const uuids = cards.map((c) => c.uuid);
+    const uuids = cards.map((c: CardOption) => c.uuid);
     const reorderedUuids = arrayMove(uuids, oldIndex, newIndex);
 
     const newMap: Record<string, string> = {};
@@ -139,7 +155,7 @@ export function PageView() {
     });
 
     return newMap;
-  };
+  }, []);
 
   function chunkCards<T>(cards: T[], size: number): T[][] {
     const chunks: T[][] = [];
@@ -149,13 +165,64 @@ export function PageView() {
     return chunks;
   }
 
-  const { loadingMap, ensureProcessed } = useImageProcessing({
+  const { loadingMap, ensureProcessed, ensureBackFaceProcessed } = useImageProcessing({
     unit, // "mm" | "in"
     bleedEdgeWidth, // number
   });
 
+  // Process custom cardback to add bleed if needed
+  const [processedCardbackUrl, setProcessedCardbackUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let blobUrlToRevoke: string | null = null;
+
+    if (!customCardbackUrl) {
+      setProcessedCardbackUrl(null);
+      return;
+    }
+
+    if (customCardbackHasBleed) {
+      // Use as-is if it already has bleed
+      setProcessedCardbackUrl(customCardbackUrl);
+      return;
+    }
+
+    // Process the cardback to add bleed
+    (async () => {
+      try {
+        const resolvedSrc = await urlToDataUrl(customCardbackUrl);
+        if (cancelled) return;
+
+        const processedUrl = await addBleedEdgeSmartly(resolvedSrc, bleedEdgeWidth, {
+          unit,
+          bleedEdgeWidth,
+          hasBakedBleed: false,
+        });
+
+        if (cancelled) {
+          if (processedUrl) URL.revokeObjectURL(processedUrl);
+          return;
+        }
+
+        blobUrlToRevoke = processedUrl;
+        setProcessedCardbackUrl(processedUrl);
+      } catch (err) {
+        console.error("Failed to process custom cardback:", err);
+        setProcessedCardbackUrl(customCardbackUrl); // Fallback to original
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (blobUrlToRevoke) {
+        URL.revokeObjectURL(blobUrlToRevoke);
+      }
+    };
+  }, [customCardbackUrl, customCardbackHasBleed, bleedEdgeWidth, unit]);
+
   return (
-    <div className="w-1/2 flex-1 overflow-y-auto bg-gray-200 h-full p-6 flex justify-center dark:bg-gray-800 ">
+    <div className="w-1/2 flex-1 overflow-y-auto bg-gray-200 h-full p-6 flex flex-col items-center dark:bg-gray-800 ">
       {cards.length === 0 ? (
         <div className="flex flex-col items-center">
           <div className="flex flex-row items-center">
@@ -173,6 +240,25 @@ export function PageView() {
           </Label>
         </div>
       ) : null}
+
+      {cards.length > 0 && (
+        <div className="mb-4 flex gap-2">
+          <Button
+            size="sm"
+            color={viewMode === "front" ? "blue" : "gray"}
+            onClick={() => setViewMode("front")}
+          >
+            Front View
+          </Button>
+          <Button
+            size="sm"
+            color={viewMode === "back" ? "blue" : "gray"}
+            onClick={() => setViewMode("back")}
+          >
+            Back View
+          </Button>
+        </div>
+      )}
 
       <div ref={pageRef} className="flex flex-col gap-[1rem]">
         {contextMenu.visible && contextMenu.cardIndex !== null && (
@@ -212,7 +298,13 @@ export function PageView() {
         )}
 
         <DndContext
-          sensors={useSensors(useSensor(PointerSensor))}
+          sensors={useSensors(
+            useSensor(PointerSensor, {
+              activationConstraint: {
+                distance: 8,
+              },
+            })
+          )}
           collisionDetection={closestCenter}
           onDragEnd={({ active, over }) => {
             if (over && active.id !== over.id) {
@@ -270,8 +362,22 @@ export function PageView() {
                   }}
                 >
                   {page.map((card, index) => {
-                    const globalIndex = pageIndex * pageCapacity + index;
-                    const img = selectedImages[card.uuid];
+                    const globalIndex = pageIndex * 9 + index;
+
+                    // Determine which image to show based on view mode
+                    let img: string | undefined = selectedImages[card.uuid];
+                    const hasBackFace = card.faces && card.faces.length > 1 && card.faces[1]?.imageUrl;
+
+                    if (viewMode === "back") {
+                      if (hasBackFace) {
+                        // Use the processed back face image
+                        img = selectedBackFaceImages[card.uuid];
+                      } else {
+                        // Single-faced card in back view - don't show front image, let SortableCard show cardback
+                        img = undefined;
+                      }
+                    }
+
                     const noImages =
                       !img &&
                       !originalSelectedImages[card.uuid] &&
@@ -318,39 +424,47 @@ export function PageView() {
                         key={globalIndex}
                         card={card}
                         state={loadingMap[card.uuid] ?? "idle"}
-                        hasImage={!!selectedImages[card.uuid]}
-                        ensureProcessed={ensureProcessed}
+                        hasImage={!!img || (viewMode === "back" && !hasBackFace)}
+                        ensureProcessed={viewMode === "back" && hasBackFace ? ensureBackFaceProcessed : ensureProcessed}
                       >
                         <SortableCard
                           key={globalIndex}
                           card={card}
                           index={index}
                           globalIndex={globalIndex}
-                          imageSrc={img}
+                          imageSrc={img || ""}
                           totalCardWidth={totalCardWidth}
                           totalCardHeight={totalCardHeight}
                           guideOffset={guideOffset}
                           setContextMenu={setContextMenu}
+                          viewMode={viewMode}
+                          customCardbackUrl={processedCardbackUrl || customCardbackUrl}
+                          customCardbackHasBleed={customCardbackHasBleed}
+                          disableBackPageGuides={disableBackPageGuides}
                         />
                       </CardCellLazy>
                     );
                   })}
                 </div>
 
-                <EdgeCutLines
-                  totalCardWidthMm={totalCardWidth}
-                  totalCardHeightMm={totalCardHeight}
-                  baseCardWidthMm={baseCardWidthMm}
-                  baseCardHeightMm={baseCardHeightMm}
-                  bleedEdgeWidthMm={bleedEdgeWidth}
-                />
+                {!(viewMode === "back" && disableBackPageGuides) && (
+                  <EdgeCutLines
+                    totalCardWidthMm={totalCardWidth}
+                    totalCardHeightMm={totalCardHeight}
+                    baseCardWidthMm={baseCardWidthMm}
+                    baseCardHeightMm={baseCardHeightMm}
+                    bleedEdgeWidthMm={bleedEdgeWidth}
+                  />
+                )}
               </div>
             ))}
           </SortableContext>
         </DndContext>
       </div>
 
-      <ArtworkModal />
+      <Suspense fallback={null}>
+        <ArtworkModal />
+      </Suspense>
     </div>
   );
 }
