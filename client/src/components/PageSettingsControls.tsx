@@ -1,18 +1,15 @@
 import { useImageProcessing } from "@/hooks/useImageProcessing";
 import { useCardsStore, useSettingsStore } from "@/store";
-import { Button, Checkbox, HelperText, HR, Label, TextInput } from "flowbite-react";
+import type { ExportDpi } from "@/store/settings";
+import { Button, Checkbox, HelperText, HR, Label, Select, TextInput, Accordion, AccordionPanel, AccordionContent, AccordionTitle, Tooltip, RangeSlider } from "flowbite-react";
 import { ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { ExportActions } from "./LayoutSettings/ExportActions";
 import { PageSizeControl } from "./LayoutSettings/PageSizeControl";
-
-const INCH_TO_MM = 25.4;
-const CARD_W_IN = 2.5;
-const CARD_H_IN = 3.5;
-
-function inToMm(inches: number) {
-  return inches * INCH_TO_MM;
-}
+import { BATCH_PDF_MAX_SIZE, CARD_H_MM, CARD_W_MM, IN_TO_MM } from "@/constants";
+import { GridControls } from "./LayoutSettings/GridControl";
+import { ClampNumber } from "@/helpers/SizeHelpers";
+import { CardbackSettings } from "./LayoutSettings/CardbackSettings";
 
 export function PageSettingsControls() {
   const cards = useCardsStore((state) => state.cards);
@@ -21,7 +18,7 @@ export function PageSettingsControls() {
   const rows = useSettingsStore((state) => state.rows);
 
   const bleedEdgeWidth = useSettingsStore((state) => state.bleedEdgeWidth);
-  const bleedEdge = useSettingsStore((state) => state.bleedEdge);
+  const useCornerGuides = useSettingsStore((state) => state.useCornerGuides);
 
   const guideColor = useSettingsStore((state) => state.guideColor);
   const guideWidth = useSettingsStore((state) => state.guideWidth);
@@ -32,17 +29,32 @@ export function PageSettingsControls() {
   const pageUnit = useSettingsStore((s) => s.pageSizeUnit);
 
   const cardSpacingMm = useSettingsStore((s) => s.cardSpacingMm);
+  const exportDpi = useSettingsStore((s) => s.exportDpi);
+  const roundedCornerGuides = useSettingsStore((s) => s.roundedCornerGuides);
+  const cornerGuideOffsetMm = useSettingsStore((s) => s.cornerGuideOffsetMm);
 
-  const setColumns = useSettingsStore((state) => state.setColumns);
-  const setRows = useSettingsStore((state) => state.setRows);
   const setBleedEdgeWidth = useSettingsStore((state) => state.setBleedEdgeWidth);
-  const setBleedEdge = useSettingsStore((state) => state.setBleedEdge);
+  const setUseCornerGuides = useSettingsStore((state) => state.setUseCornerGuides);
   const setGuideColor = useSettingsStore((state) => state.setGuideColor);
   const setGuideWidth = useSettingsStore((state) => state.setGuideWidth);
   const setZoom = useSettingsStore((state) => state.setZoom);
   const resetSettings = useSettingsStore((state) => state.resetSettings);
   const setCardSpacingMm = useSettingsStore((s) => s.setCardSpacingMm);
-
+  const setExportDpi = useSettingsStore((s) => s.setExportDpi);
+  const useExportBatching = useSettingsStore((s) => s.useExportBatching);
+  const setUseExportBatching = useSettingsStore((s) => s.setUseExportBatching);
+  const exportBatchSize = useSettingsStore((s) => s.exportBatchSize);
+  const setExportBatchSize = useSettingsStore((s) => s.setExportBatchSize);
+  const setRoundedCornerGuides = useSettingsStore((s) => s.setRoundedCornerGuides);
+  const setCornerGuideOffsetMm = useSettingsStore((s) => s.setCornerGuideOffsetMm);
+  const useOriginalCardNames = useSettingsStore((s) => s.useOriginalCardNames);
+  const setUseOriginalCardNames = useSettingsStore((s) => s.setUseOriginalCardNames);
+  const prefixIndexToExportNames = useSettingsStore((s) => s.prefixIndexToExportNames);
+  const setPrefixIndexToExportNames = useSettingsStore((s) => s.setPrefixIndexToExportNames);
+  const includeDoubleFacesInZip = useSettingsStore((s) => s.includeDoubleFacesInZip);
+  const setIncludeDoubleFacesInZip = useSettingsStore((s) => s.setIncludeDoubleFacesInZip);
+  const useHighQualityPreviews = useSettingsStore((s) => s.useHighQualityPreviews);
+  const setUseHighQualityPreviews = useSettingsStore((s) => s.setUseHighQualityPreviews);
   const { reprocessSelectedImages } = useImageProcessing({
     unit: "mm",
     bleedEdgeWidth,
@@ -67,11 +79,11 @@ export function PageSettingsControls() {
   }, []);
 
   // ----- Spacing math (work in mm for a single formula) -----
-  const pageWmm = pageUnit === "mm" ? pageWidth : inToMm(pageWidth);
-  const pageHmm = pageUnit === "mm" ? pageHeight : inToMm(pageHeight);
+  const pageWmm = pageUnit === "mm" ? pageWidth : IN_TO_MM * pageWidth;
+  const pageHmm = pageUnit === "mm" ? pageHeight : IN_TO_MM * pageHeight;
 
-  const cardWmm = inToMm(CARD_W_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
-  const cardHmm = inToMm(CARD_H_IN) + (bleedEdge ? 2 * bleedEdgeWidth : 0);
+  const cardWmm = CARD_W_MM + (useCornerGuides ? 2 * bleedEdgeWidth : 0);
+  const cardHmm = CARD_H_MM + (useCornerGuides ? 2 * bleedEdgeWidth : 0);
 
   const maxSpacingMm = useMemo(() => {
     const xDen = Math.max(1, columns - 1);
@@ -92,110 +104,317 @@ export function PageSettingsControls() {
   };
 
   return (
-    <div className="w-1/4 min-w-[18rem] max-w-[26rem] p-4 bg-gray-100 dark:bg-gray-700 h-full flex flex-col gap-4 overflow-y-auto">
+    <div id="settings-container" className="w-1/4 min-w-[18rem] max-w-[26rem] p-4 bg-gray-100 dark:bg-gray-700 h-full flex flex-col gap-4 overflow-y-auto">
       <h2 className="text-2xl font-semibold dark:text-white">Settings</h2>
 
-      <div className="space-y-4">
-        <PageSizeControl />
+      <div id="settings-content" className="space-y-4">
+        <Accordion flush={true}>
+          <AccordionPanel>
+            <AccordionTitle>
+              Page Size Settings
+            </AccordionTitle>
+            <AccordionContent>
+              <PageSizeControl />
+            </AccordionContent>
+          </AccordionPanel>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label>Columns</Label>
-            <TextInput
-              className="w-full"
-              type="number"
-              min={1}
-              max={10}
-              value={columns}
-              onChange={(e) => {
-                const v = Math.max(1, Math.min(10, parseInt(e.target.value || "1", 10)));
-                if (!Number.isNaN(v)) setColumns(v);
-              }}
-            />
-          </div>
-          <div>
-            <Label>Rows</Label>
-            <TextInput
-              className="w-full"
-              type="number"
-              min={1}
-              max={10}
-              value={rows}
-              onChange={(e) => {
-                const v = Math.max(1, Math.min(10, parseInt(e.target.value || "1", 10)));
-                if (!Number.isNaN(v)) setRows(v);
-              }}
-            />
-          </div>
-        </div>
+          <AccordionPanel>
+            <AccordionTitle>
+              Layout Settings
+            </AccordionTitle>
+            <AccordionContent>
+              <div className="space-y-4">
+                <GridControls />
 
-        <div>
-          <Label>Bleed Edge (mm)</Label>
-          <TextInput
-            className="w-full"
-            type="number"
-            value={bleedEdgeWidth}
-            max={2}
-            onChange={(e) => {
-              const val = parseInt(e.target.value);
-              if (!isNaN(val)) {
-                setBleedEdgeWidth(val);
-                // Only bleed width affects reprocessing
-                debouncedReprocess(cards, val);
-              }
-            }}
-          />
-        </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label>Bleed Edge (mm)</Label>
+                    <TextInput
+                      className="w-full"
+                      type="number"
+                      value={bleedEdgeWidth}
+                      max={2}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (!isNaN(val)) {
+                          setBleedEdgeWidth(val);
+                          // Only bleed width affects reprocessing
+                          debouncedReprocess(cards, val);
+                        }
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <Label>Card Spacing (mm)</Label>
+                    <TextInput
+                      // className="w-full"
+                      className="flex-1"
+                      type="number"
+                      min={0}
+                      max={maxSpacingMm}
+                      step={0.5}
+                      value={cardSpacingMm}
+                      onChange={(e) => handleSpacingChange(e.target.value)}
+                    />
 
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="bleed-edge"
-            checked={bleedEdge}
-            onChange={(e) => setBleedEdge(e.target.checked)}
-          />
-          <Label htmlFor="bleed-edge">Enable Bleed Edge</Label>
-        </div>
+                    {/* <HelperText>
+                      Max that fits with current layout: <b>{maxSpacingMm} mm</b>.
+                    </HelperText> */}
+                  </div>
+                </div>
 
-        {/* NEW: Card-to-card spacing */}
-        <div>
-          <Label>Distance between cards (mm)</Label>
-          <TextInput
-            className="w-full"
-            type="number"
-            min={0}
-            step={0.5}
-            value={cardSpacingMm}
-            onChange={(e) => handleSpacingChange(e.target.value)}
-          />
-          <HelperText>
-            Max that fits with current layout: <b>{maxSpacingMm} mm</b>.
-          </HelperText>
-        </div>
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="use-high-quality-previews"
+                    checked={useHighQualityPreviews}
+                    onChange={(e) => {
+                      setUseHighQualityPreviews(e.target.checked);
+                      // Reprocess images with new quality setting
+                      debouncedReprocess(cards, bleedEdgeWidth);
+                    }}
+                  />
+                  <Tooltip
+                    content="Use higher DPI for web previews (uses more memory but better quality)"
+                    placement="left"
+                    style="dark">
+                    <Label htmlFor="use-high-quality-previews">High Quality Previews</Label>
+                  </Tooltip>
+                </div>
 
-        <div>
-          <Label>Guides Color</Label>
-          <input
-            type="color"
-            value={guideColor}
-            onChange={(e) => setGuideColor(e.target.value)}
-            className="w-full h-10 p-0 border rounded"
-          />
-        </div>
+              </div>
+            </AccordionContent>
+          </AccordionPanel>
 
-        <div>
-          <Label>Guides Width (px)</Label>
-          <TextInput
-            className="w-full"
-            type="number"
-            value={guideWidth}
-            step="0.1"
-            min="0"
-            onChange={(e) => {
-              const val = parseFloat(e.target.value);
-              if (!isNaN(val)) setGuideWidth(val);
-            }}
-          />
-        </div>
+          <AccordionPanel>
+            <AccordionTitle>
+              Cutting Guides
+            </AccordionTitle>
+            <AccordionContent>
+              <div className="space-y-4">
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="use-corner-guides"
+                    checked={useCornerGuides}
+                    onChange={(e) => setUseCornerGuides(e.target.checked)}
+                  />
+                  <Label htmlFor="use-corner-guides">Enable Guides</Label>
+                </div>
+
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <Label disabled={!useCornerGuides}>Color</Label>
+                    <input
+                      type="color"
+                      value={guideColor}
+                      disabled={!useCornerGuides}
+                      onChange={(e) => setGuideColor(e.target.value)}
+                      className="w-full h-10 p-0 border rounded"
+                    />
+                  </div>
+                  <div>
+                    <Label disabled={!useCornerGuides}>Width (px)</Label>
+                    <TextInput
+                      className="w-full"
+                      type="number"
+                      disabled={!useCornerGuides}
+
+                      value={guideWidth}
+                      step="0.1"
+                      min="0"
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) setGuideWidth(val);
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="rounded-corner-guides"
+                    disabled={!useCornerGuides}
+                    checked={roundedCornerGuides}
+                    onChange={(e) => setRoundedCornerGuides(e.target.checked)}
+                  />
+                  <Tooltip
+                    content="Draw guides that follow the 2.5mm corner radius"
+                    placement="left"
+                    style="dark">
+                    <Label disabled={!useCornerGuides} htmlFor="rounded-corner-guides">Rounded Guides</Label>
+                  </Tooltip>
+
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div>
+                    <Tooltip
+                      content="Negative values move the guide outward, positive values move it inward"
+                      placement="left"
+                      style="dark">
+                      <Label disabled={!roundedCornerGuides}>Corner Guide Offset (mm)</Label>
+                    </Tooltip>
+
+                    <TextInput
+                      className="w-full"
+                      type="number"
+                      min={-2}
+                      max={2}
+                      step={0.1}
+                      disabled={!roundedCornerGuides}
+                      value={cornerGuideOffsetMm}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (!isNaN(val)) setCornerGuideOffsetMm(Math.max(-2, Math.min(2, val)));
+                      }}
+                    />
+                  </div>
+
+                </div>
+
+              </div>
+            </AccordionContent>
+          </AccordionPanel>
+
+          <AccordionPanel>
+            <AccordionTitle>
+              Cardback Settings
+            </AccordionTitle>
+            <AccordionContent>
+              <CardbackSettings />
+            </AccordionContent>
+          </AccordionPanel>
+
+          <AccordionPanel>
+            <AccordionTitle>
+              Export Settings
+            </AccordionTitle>
+            <AccordionContent>
+              <div className="space-y-4">
+                <div>
+                  <Label>Export DPI</Label>
+                  <Select
+                    value={exportDpi}
+                    onChange={(e) => {
+                      const value = parseInt(e.target.value) as ExportDpi;
+                      setExportDpi(value);
+                    }}
+                  >
+                    <option value={600}>600 DPI (Standard)</option>
+                    <option value={900}>900 DPI (High Quality)</option>
+                    <option value={1200}>1200 DPI (Print Quality)</option>
+                  </Select>
+                  <HelperText>
+                    Higher DPI produces better quality but larger file sizes.
+                  </HelperText>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="export-batching"
+                    checked={useExportBatching}
+                    onChange={(e) => setUseExportBatching(e.target.checked)}
+                  />
+                  <Tooltip
+                    content="Export multiple PDFs in batches to reduce memory usage"
+                    placement="left"
+                    style="dark">
+                    <Label disabled={!useExportBatching} htmlFor="export-batching">Export Batching</Label>
+                  </Tooltip>
+
+                </div>
+
+                <div>
+                  <Label disabled={!useExportBatching}>Batch Size (pages)</Label>
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="flex items-center">
+                      <TextInput
+                        className="w-full"
+                        type="number"
+                        disabled={!useExportBatching}
+
+                        value={exportBatchSize}
+                        step="1"
+                        min="1"
+                        max={BATCH_PDF_MAX_SIZE}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (!isNaN(val)) setExportBatchSize(ClampNumber(val, 1, BATCH_PDF_MAX_SIZE));
+                        }}
+                      />
+                    </div>
+                    <div className="col-span-3 mt-2">
+                      <RangeSlider
+                        min={1}
+                        max={BATCH_PDF_MAX_SIZE}
+                        step={1}
+                        sizing="lg"
+                        disabled={!useExportBatching}
+                        value={exportBatchSize}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          if (!isNaN(val)) setExportBatchSize(ClampNumber(val, 1, BATCH_PDF_MAX_SIZE));
+                        }}
+                      />
+                    </div>
+
+                  </div>
+
+                </div>
+
+                <HR className="dark:bg-gray-500" />
+
+                <div className="space-y-3">
+                  <Label>Zip Export Naming</Label>
+
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="use-original-card-names"
+                      checked={useOriginalCardNames}
+                      onChange={(e) => setUseOriginalCardNames(e.target.checked)}
+                    />
+                    <Tooltip
+                      content="Use Scryfall naming pattern (series-number-cardname) instead of card name"
+                      placement="left"
+                      style="dark">
+                      <Label htmlFor="use-original-card-names">Use Scryfall Filenames</Label>
+                    </Tooltip>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="prefix-index-to-export-names"
+                      checked={prefixIndexToExportNames}
+                      onChange={(e) => setPrefixIndexToExportNames(e.target.checked)}
+                    />
+                    <Tooltip
+                      content="Add numeric index prefix (001, 002, etc.) to exported filenames"
+                      placement="left"
+                      style="dark">
+                      <Label htmlFor="prefix-index-to-export-names">Add Index Prefix</Label>
+                    </Tooltip>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="include-double-faces-in-zip"
+                      checked={includeDoubleFacesInZip}
+                      onChange={(e) => setIncludeDoubleFacesInZip(e.target.checked)}
+                    />
+                    <Tooltip
+                      content="Automatically include both sides of double-faced cards in ZIP export"
+                      placement="left"
+                      style="dark">
+                      <Label htmlFor="include-double-faces-in-zip">Include Both Faces</Label>
+                    </Tooltip>
+                  </div>
+                </div>
+              </div>
+
+            </AccordionContent>
+          </AccordionPanel>
+        </Accordion>
 
         <div>
           <Label>Zoom</Label>
@@ -219,6 +438,10 @@ export function PageSettingsControls() {
             </Button>
           </div>
         </div>
+
+        {/* <HR className="dark:bg-gray-500" /> */}
+
+        
 
         <HR className="dark:bg-gray-500" />
 

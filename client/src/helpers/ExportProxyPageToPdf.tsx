@@ -1,24 +1,26 @@
-import { API_BASE } from "@/constants";
+import { API_BASE, CARD_H_MM, CARD_W_MM, pixelDPIMap } from "@/constants";
+import type { LoadingProgressState } from "@/store/loading";
 import type { LayoutPreset } from "@/store/settings";
 import type { CardOption } from "@/types/Card";
-import jsPDF from "jspdf";
-import { getPatchNearCorner } from "./ImageHelper";
+import { saveAs } from "file-saver";
+import { PDFDocument, rgb, type PDFPage } from "pdf-lib";
+import {
+  createDpiHelpers,
+  getPatchNearCorner,
+  guessBucketDpiFromHeight,
+  DPMM,
+  canvasToBlob,
+  isUploadedFileToken,
+  loadImageWithBlobFetch,
+} from "./ImageHelper";
 
-const PDF_PAGE_COLOR = "#FFFFFF";
 const NEAR_BLACK = 16;
 const NEAR_WHITE = 239;
-const DPI = 600;
-const IN = (inches: number) => Math.round(inches * DPI);
-const MM_TO_IN = (mm: number) => mm / 25.4;
-const MM_TO_PX = (mm: number) => IN(MM_TO_IN(mm));
+
 
 function getLocalBleedImageUrl(originalUrl: string) {
   return `${API_BASE}/api/cards/images/proxy?url=${encodeURIComponent(originalUrl)}`;
 }
-
-const JSPDF_SUPPORTED = new Set([
-  "letter", "legal", "tabloid", "a4", "a3", "a2", "a1",
-]);
 
 const ALPHA_EMPTY = 10; // treat <=10 alpha as transparent-ish
 
@@ -79,18 +81,6 @@ function detectFlatBorderColor(
   return null;
 }
 
-function resolveJsPdfFormat(opts: {
-  preset: LayoutPreset;
-  unit: "mm" | "in";
-  width: number;
-  height: number;
-}): string | [number, number] {
-  const { preset, unit, width, height } = opts;
-  if (JSPDF_SUPPORTED.has(preset.toLowerCase())) return preset.toLowerCase();
-  const toMm = (n: number) => (unit === "in" ? n * 25.4 : n);
-  return [toMm(width), toMm(height)];
-}
-
 function preferPng(url: string) {
   try {
     const u = new URL(url);
@@ -118,26 +108,8 @@ function calibratedBleedTrimPxForHeight(h: number) {
   return 156;
 }
 
-async function loadImage(src: string): Promise<HTMLImageElement> {
-  // If it’s an http(s) URL, fetch to a blob first to avoid tainting
-  if (/^https?:\/\//i.test(src)) {
-    const resp = await fetch(src, { mode: "cors", credentials: "omit" });
-    if (!resp.ok) throw new Error(`Failed to fetch image: ${resp.status}`);
-    const blob = await resp.blob();
-    src = URL.createObjectURL(blob);
-  }
-
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = (e) => reject(e);
-    img.src = src;
-  });
-}
-
 async function trimExistingBleedIfAny(src: string, bleedTrimPx?: number) {
-  const img = await loadImage(src);
+  const img = await loadImageWithBlobFetch(src);
   const trim = bleedTrimPx ?? calibratedBleedTrimPxForHeight(img.height);
 
   const w = img.width - trim * 2;
@@ -161,7 +133,7 @@ function blackenAllNearBlackPixels(
   height: number,
   threshold: number,
   borderThickness = { top: 192, bottom: 800, left: 96, right: 96 },
-  targetDpi = DPI
+  targetDpi: number
 ) {
   const scale = targetDpi / 300;
   const bt = {
@@ -191,70 +163,100 @@ function blackenAllNearBlackPixels(
   ctx.putImageData(imageData, 0, 0);
 }
 
-function drawEdgeStubs(
-  ctx: CanvasRenderingContext2D,
-  pageW: number,
-  pageH: number,
-  startX: number,
-  startY: number,
-  columns: number,
-  rows: number,
-  contentW: number,
-  contentH: number,
-  cardW: number,
-  cardH: number,
-  bleedPx: number,
-  guideWidthPx: number,
-  spacingPx = 0
-) {
-  const xCuts: number[] = [];
-  for (let c = 0; c < columns; c++) {
-    const cellLeft = startX + c * (cardW + spacingPx);
-    xCuts.push(cellLeft + bleedPx);
-    xCuts.push(cellLeft + bleedPx + contentW);
+async function smartTrimMpcBleed(
+  img: HTMLImageElement,
+  desiredBleedPx: number,
+  targetDpi: number
+): Promise<HTMLImageElement | null> {
+  const { dpi: sourceDpi, hasBleed } = guessBucketDpiFromHeight(img.height);
+
+  if (!hasBleed) {
+    return null;
   }
 
-  const yCuts: number[] = [];
-  for (let r = 0; r < rows; r++) {
-    const cellTop = startY + r * (cardH + spacingPx);
-    yCuts.push(cellTop + bleedPx);
-    yCuts.push(cellTop + bleedPx + contentH);
+  const dims = pixelDPIMap.get(sourceDpi);
+  if (!dims) {
+    return null;
   }
 
-  const topStubH = startY + bleedPx;
-  const botStubH = startY + bleedPx;
-  const leftStubW = startX + bleedPx;
-  const rightStubW = startX + bleedPx;
+  const MPC_BLEED_MM = 3;
+  const desiredBleedMm = desiredBleedPx / DPMM(targetDpi);
 
-  ctx.save();
-  ctx.fillStyle = "#000000";
+  if (desiredBleedMm <= MPC_BLEED_MM) {
+    const trimAmountMm = MPC_BLEED_MM - desiredBleedMm;
+    const trimPx = Math.round(trimAmountMm * DPMM(sourceDpi));
 
-  for (const x of xCuts) {
-    ctx.fillRect(x, 0, guideWidthPx, topStubH);
-    ctx.fillRect(x, pageH - botStubH, guideWidthPx, botStubH);
+    if (trimPx > 0) {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width - trimPx * 2;
+      canvas.height = img.height - trimPx * 2;
+
+      if (canvas.width <= 0 || canvas.height <= 0) {
+        return null;
+      }
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+
+      ctx.drawImage(img, trimPx, trimPx, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+
+      const trimmed = new Image();
+      trimmed.src = canvas.toDataURL("image/png");
+      await new Promise((r) => (trimmed.onload = r));
+      return trimmed;
+    }
+
+    return img;
   }
-  for (const y of yCuts) {
-    ctx.fillRect(0, y, leftStubW, guideWidthPx);
-    ctx.fillRect(pageW - rightStubW, y, rightStubW, guideWidthPx);
-  }
 
-  ctx.restore();
+  return null;
 }
 
 async function buildCardWithBleed(
   src: string,
   bleedPx: number,
-  opts: { isUserUpload: boolean; hasBakedBleed?: boolean }
+  opts: { isUserUpload: boolean; hasBakedBleed?: boolean },
+  dpi: number
 ) {
-  const contentW = MM_TO_PX(63);
-  const contentH = MM_TO_PX(88);
+  const { MM_TO_PX } = createDpiHelpers(dpi);
+  const contentW = MM_TO_PX(CARD_W_MM);
+  const contentH = MM_TO_PX(CARD_H_MM);
   const finalW = contentW + bleedPx * 2;
   const finalH = contentH + bleedPx * 2;
 
-  const baseImg =
-    opts.isUserUpload && opts.hasBakedBleed
-      ? await trimExistingBleedIfAny(src)
-      : await loadImage(src);
+  let baseImg = await loadImageWithBlobFetch(src);
+
+  if (opts.hasBakedBleed && bleedPx > 0) {
+    const smartTrimmed = await smartTrimMpcBleed(baseImg, bleedPx, dpi);
+    if (smartTrimmed) {
+      const scaledCanvas = document.createElement("canvas");
+      scaledCanvas.width = finalW;
+      scaledCanvas.height = finalH;
+      const scaledCtx = scaledCanvas.getContext("2d")!;
+
+      const expectedWidth = MM_TO_PX(CARD_W_MM) + bleedPx * 2;
+      const expectedHeight = MM_TO_PX(CARD_H_MM) + bleedPx * 2;
+
+      const scaleX = expectedWidth / smartTrimmed.width;
+      const scaleY = expectedHeight / smartTrimmed.height;
+      const scale = Math.max(scaleX, scaleY);
+
+      const scaledW = Math.round(smartTrimmed.width * scale);
+      const scaledH = Math.round(smartTrimmed.height * scale);
+      const offsetX = Math.round((scaledW - expectedWidth) / 2);
+      const offsetY = Math.round((scaledH - expectedHeight) / 2);
+
+      scaledCtx.imageSmoothingEnabled = true;
+      scaledCtx.imageSmoothingQuality = "high";
+      scaledCtx.drawImage(smartTrimmed, -offsetX, -offsetY, scaledW, scaledH);
+
+      return scaledCanvas;
+    }
+  }
+
+  if (opts.isUserUpload && opts.hasBakedBleed) {
+    baseImg = await trimExistingBleedIfAny(src);
+  }
 
   const aspect = baseImg.width / baseImg.height;
   const targetAspect = contentW / contentH;
@@ -278,7 +280,7 @@ async function buildCardWithBleed(
   bctx.imageSmoothingQuality = "high";
   bctx.drawImage(baseImg, -offX, -offY, drawW, drawH);
 
-  const dpiFactor = DPI / 300;
+  const dpiFactor = dpi / 300;
   const cornerSize = Math.round(30 * dpiFactor);
   const sampleInset = Math.round(10 * dpiFactor);
   const patchSize = Math.round(20 * dpiFactor);
@@ -378,7 +380,7 @@ async function buildCardWithBleed(
     bctx.restore();
   }
 
-  blackenAllNearBlackPixels(bctx, contentW, contentH, blackThreshold, undefined, DPI);
+  blackenAllNearBlackPixels(bctx, contentW, contentH, blackThreshold, undefined, dpi);
 
   const out = document.createElement("canvas");
   out.width = finalW;
@@ -444,65 +446,343 @@ async function buildCardWithBleed(
 function scaleGuideWidthForDPI(
   screenPx: number,
   screenPPI = 96,
-  targetDPI = DPI
+  targetDPI: number
 ) {
   return Math.round((screenPx / screenPPI) * targetDPI);
 }
 
-function drawCornerGuides(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  contentW: number,
-  contentH: number,
-  bleedPx: number,
-  guideColor: string,
-  guideWidthPx: number
+const MM_PER_INCH = 25.4;
+const POINTS_PER_INCH = 72;
+
+const mmToPt = (mm: number) => (mm / MM_PER_INCH) * POINTS_PER_INCH;
+
+function toPdfPoint(pageHeightMm: number, point: { x: number; y: number }) {
+  return {
+    x: mmToPt(point.x),
+    y: mmToPt(pageHeightMm - point.y),
+  };
+}
+
+function drawRectTopLeft(
+  page: PDFPage,
+  pageHeightMm: number,
+  xMm: number,
+  yMm: number,
+  widthMm: number,
+  heightMm: number,
+  color: ReturnType<typeof rgb>
 ) {
-  const guideLenPx = MM_TO_PX(2);
-  const gx = x + bleedPx;
-  const gy = y + bleedPx;
+  if (widthMm <= 0 || heightMm <= 0) return;
+  const xPt = mmToPt(xMm);
+  const yPt = mmToPt(pageHeightMm - yMm - heightMm);
+  page.drawRectangle({
+    x: xPt,
+    y: yPt,
+    width: mmToPt(widthMm),
+    height: mmToPt(heightMm),
+    color,
+  });
+}
 
-  ctx.save();
-  ctx.fillStyle = guideColor;
+function parseHexColor(value: string) {
+  const normalized = value.trim().replace(/^#/, "");
+  const expanded =
+    normalized.length === 3
+      ? normalized
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : normalized.padEnd(6, "0");
+  const parsed = Number.parseInt(expanded.slice(0, 6), 16);
+  if (Number.isNaN(parsed)) {
+    return rgb(0, 0, 0);
+  }
+  const r = (parsed >> 16) & 0xff;
+  const g = (parsed >> 8) & 0xff;
+  const b = parsed & 0xff;
+  return rgb(r / 255, g / 255, b / 255);
+}
 
-  // TL
-  ctx.fillRect(gx, gy, guideWidthPx, guideLenPx);
-  ctx.fillRect(gx, gy, guideLenPx, guideWidthPx);
-  // TR
-  ctx.fillRect(gx + contentW, gy, guideWidthPx, guideLenPx);
-  ctx.fillRect(gx + contentW - guideLenPx + guideWidthPx, gy, guideLenPx, guideWidthPx);
-  // BL
-  ctx.fillRect(gx, gy + contentH - guideLenPx + guideWidthPx, guideWidthPx, guideLenPx);
-  ctx.fillRect(gx, gy + contentH, guideLenPx, guideWidthPx);
-  // BR
-  ctx.fillRect(gx + contentW, gy + contentH - guideLenPx + guideWidthPx, guideWidthPx, guideLenPx);
-  ctx.fillRect(gx + contentW - guideLenPx + guideWidthPx, gy + contentH, guideLenPx, guideWidthPx);
+function drawRoundedCornerGuide(
+  page: PDFPage,
+  pageHeightMm: number,
+  center: { x: number; y: number },
+  radiusMm: number,
+  startAngle: number,
+  endAngle: number,
+  color: ReturnType<typeof rgb>,
+  guideWidthMm: number
+) {
+  if (guideWidthMm <= 0 || radiusMm <= 0) return;
+  const segments = Math.max(8, Math.ceil(radiusMm * 3));
+  let prev = {
+    x: center.x + radiusMm * Math.cos(startAngle),
+    y: center.y + radiusMm * Math.sin(startAngle),
+  };
 
-  ctx.restore();
+  for (let i = 1; i <= segments; i++) {
+    const theta = startAngle + ((endAngle - startAngle) * i) / segments;
+    const next = {
+      x: center.x + radiusMm * Math.cos(theta),
+      y: center.y + radiusMm * Math.sin(theta),
+    };
+    const startPt = toPdfPoint(pageHeightMm, prev);
+    const endPt = toPdfPoint(pageHeightMm, next);
+    page.drawLine({
+      start: startPt,
+      end: endPt,
+      thickness: mmToPt(guideWidthMm),
+      color,
+    });
+    prev = next;
+  }
+}
+
+function drawCornerGuidesPdf(
+  page: PDFPage,
+  options: {
+    xMm: number;
+    yMm: number;
+    contentWidthMm: number;
+    contentHeightMm: number;
+    bleedMm: number;
+    guideColor: ReturnType<typeof rgb>;
+    guideWidthMm: number;
+    pageHeightMm: number;
+    rounded: boolean;
+    cornerOffsetMm: number;
+  }
+) {
+  const {
+    xMm,
+    yMm,
+    contentWidthMm,
+    contentHeightMm,
+    bleedMm,
+    guideColor,
+    guideWidthMm,
+    pageHeightMm,
+    rounded,
+    cornerOffsetMm,
+  } = options;
+
+  if (guideWidthMm <= 0) return;
+
+  const guideLenMm = 2;
+  const gx = xMm + bleedMm;
+  const gy = yMm + bleedMm;
+
+  if (!rounded) {
+    // Top-left
+    drawRectTopLeft(page, pageHeightMm, gx, gy, guideWidthMm, guideLenMm, guideColor);
+    drawRectTopLeft(page, pageHeightMm, gx, gy, guideLenMm, guideWidthMm, guideColor);
+    // Top-right
+    drawRectTopLeft(page, pageHeightMm, gx + contentWidthMm, gy, guideWidthMm, guideLenMm, guideColor);
+    drawRectTopLeft(
+      page,
+      pageHeightMm,
+      gx + contentWidthMm - guideLenMm + guideWidthMm,
+      gy,
+      guideLenMm,
+      guideWidthMm,
+      guideColor
+    );
+    // Bottom-left
+    drawRectTopLeft(
+      page,
+      pageHeightMm,
+      gx,
+      gy + contentHeightMm - guideLenMm + guideWidthMm,
+      guideWidthMm,
+      guideLenMm,
+      guideColor
+    );
+    drawRectTopLeft(page, pageHeightMm, gx, gy + contentHeightMm, guideLenMm, guideWidthMm, guideColor);
+    // Bottom-right
+    drawRectTopLeft(
+      page,
+      pageHeightMm,
+      gx + contentWidthMm,
+      gy + contentHeightMm - guideLenMm + guideWidthMm,
+      guideWidthMm,
+      guideLenMm,
+      guideColor
+    );
+    drawRectTopLeft(
+      page,
+      pageHeightMm,
+      gx + contentWidthMm - guideLenMm + guideWidthMm,
+      gy + contentHeightMm,
+      guideLenMm,
+      guideWidthMm,
+      guideColor
+    );
+    return;
+  }
+
+  const cornerRadiusMm = 2.5;
+  const diagonalOffsetMm = cornerOffsetMm * Math.SQRT2;
+
+  const corners = [
+    {
+      center: {
+        x: gx + cornerRadiusMm + diagonalOffsetMm,
+        y: gy + cornerRadiusMm + diagonalOffsetMm,
+      },
+      start: Math.PI,
+      end: Math.PI * 1.5,
+    },
+    {
+      center: {
+        x: gx + contentWidthMm - cornerRadiusMm - diagonalOffsetMm,
+        y: gy + cornerRadiusMm + diagonalOffsetMm,
+      },
+      start: Math.PI * 1.5,
+      end: Math.PI * 2,
+    },
+    {
+      center: {
+        x: gx + cornerRadiusMm + diagonalOffsetMm,
+        y: gy + contentHeightMm - cornerRadiusMm - diagonalOffsetMm,
+      },
+      start: Math.PI * 0.5,
+      end: Math.PI,
+    },
+    {
+      center: {
+        x: gx + contentWidthMm - cornerRadiusMm - diagonalOffsetMm,
+        y: gy + contentHeightMm - cornerRadiusMm - diagonalOffsetMm,
+      },
+      start: 0,
+      end: Math.PI * 0.5,
+    },
+  ];
+
+  for (const { center, start, end } of corners) {
+    drawRoundedCornerGuide(page, pageHeightMm, center, cornerRadiusMm, start, end, guideColor, guideWidthMm);
+  }
+}
+
+function drawEdgeStubsPdf(
+  page: PDFPage,
+  options: {
+    pageWidthMm: number;
+    pageHeightMm: number;
+    startXmm: number;
+    startYmm: number;
+    columns: number;
+    rows: number;
+    contentWidthMm: number;
+    contentHeightMm: number;
+    cardWidthMm: number;
+    cardHeightMm: number;
+    bleedMm: number;
+    guideWidthMm: number;
+    spacingMm: number;
+  }
+) {
+  const {
+    pageWidthMm,
+    pageHeightMm,
+    startXmm,
+    startYmm,
+    columns,
+    rows,
+    contentWidthMm,
+    contentHeightMm,
+    cardWidthMm,
+    cardHeightMm,
+    bleedMm,
+    guideWidthMm,
+    spacingMm,
+  } = options;
+
+  if (guideWidthMm <= 0) return;
+
+  const xCuts: number[] = [];
+  for (let col = 0; col < columns; col++) {
+    const cellLeft = startXmm + col * (cardWidthMm + spacingMm);
+    xCuts.push(cellLeft + bleedMm);
+    xCuts.push(cellLeft + bleedMm + contentWidthMm);
+  }
+
+  const yCuts: number[] = [];
+  for (let row = 0; row < rows; row++) {
+    const cellTop = startYmm + row * (cardHeightMm + spacingMm);
+    yCuts.push(cellTop + bleedMm);
+    yCuts.push(cellTop + bleedMm + contentHeightMm);
+  }
+
+  const topStubMm = startYmm + bleedMm;
+  const bottomStubMm = startYmm + bleedMm;
+  const leftStubMm = startXmm + bleedMm;
+  const rightStubMm = startXmm + bleedMm;
+  const stubColor = rgb(0, 0, 0);
+
+  for (const xCut of xCuts) {
+    drawRectTopLeft(page, pageHeightMm, xCut, 0, guideWidthMm, topStubMm, stubColor);
+    drawRectTopLeft(page, pageHeightMm, xCut, pageHeightMm - bottomStubMm, guideWidthMm, bottomStubMm, stubColor);
+  }
+
+  for (const yCut of yCuts) {
+    drawRectTopLeft(page, pageHeightMm, 0, yCut, leftStubMm, guideWidthMm, stubColor);
+    drawRectTopLeft(
+      page,
+      pageHeightMm,
+      pageWidthMm - rightStubMm,
+      yCut,
+      rightStubMm,
+      guideWidthMm,
+      stubColor
+    );
+  }
+}
+
+function chunkPages<T>(items: readonly T[], size: number): T[][] {
+  const chunkSize = Math.max(1, size | 0);
+  if (items.length <= chunkSize) return [Array.from(items)];
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    result.push(items.slice(i, i + chunkSize));
+  }
+  return result;
 }
 
 export async function exportProxyPagesToPdf({
   cards,
   originalSelectedImages,
   cachedImageUrls,
-  bleedEdge,
+  uploadedFiles,
+  useCornerGuides,
   bleedEdgeWidthMm,
   guideColor,
   guideWidthPx,
   pageSizeUnit,
-  pageOrientation,
-  pageSizePreset,
+  pageOrientation: _pageOrientation,
+  pageSizePreset: _pageSizePreset,
   pageWidth,
   pageHeight,
   columns,
   rows,
-  cardSpacingMm
+  cardSpacingMm,
+  exportDpi = 600,
+  roundedCornerGuides = false,
+  cornerGuideOffsetMm = 0,
+  useBatching = false,
+  pagesPerBatch = 20,
+  onProgress,
+  abortSignal,
+  isBackSide = false,
+  customCardbackUrl,
+  customCardbackHasBleed = false,
+  exportCollated = false,
+  disableBackPageGuides = true,
 }: {
   cards: CardOption[];
   originalSelectedImages: Record<string, string>;
-  cachedImageUrls?: Record<string, string>; // <-- NEW
-  bleedEdge: boolean;
+  cachedImageUrls?: Record<string, string>;
+  uploadedFiles?: Record<string, File>;
+  useCornerGuides: boolean;
   bleedEdgeWidthMm: number;
   guideColor: string;
   guideWidthPx: number;
@@ -514,107 +794,311 @@ export async function exportProxyPagesToPdf({
   columns: number;
   rows: number;
   cardSpacingMm: number;
+  exportDpi?: number;
+  roundedCornerGuides?: boolean;
+  cornerGuideOffsetMm?: number;
+  useBatching?: boolean;
+  pagesPerBatch?: number;
+  onProgress?: (progress: LoadingProgressState) => void;
+  abortSignal?: AbortSignal;
+  isBackSide?: boolean;
+  customCardbackUrl?: string;
+  customCardbackHasBleed?: boolean;
+  exportCollated?: boolean;
+  disableBackPageGuides?: boolean;
 }) {
   if (!cards.length) return;
 
-  const pageWidthPx = pageSizeUnit === "in" ? IN(pageWidth) : MM_TO_PX(pageWidth);
-  const pageHeightPx = pageSizeUnit === "in" ? IN(pageHeight) : MM_TO_PX(pageHeight);
-
-  const contentWidthInPx = MM_TO_PX(63);
-  const contentHeightInPx = MM_TO_PX(88);
-  const bleedPx = bleedEdge ? MM_TO_PX(bleedEdgeWidthMm) : 0;
-  const cardWidthPx = contentWidthInPx + 2 * bleedPx;
-  const cardHeightPx = contentHeightInPx + 2 * bleedPx;
-
-  const spacingPx = MM_TO_PX(cardSpacingMm || 0);
-
-  // Grid + centering
-  const perPage = Math.max(1, columns * rows);
-  const gridWidthPx = columns * cardWidthPx + Math.max(0, columns - 1) * spacingPx;
-  const gridHeightPx = rows * cardHeightPx + Math.max(0, rows - 1) * spacingPx;
-  const startX = Math.round((pageWidthPx - gridWidthPx) / 2);
-  const startY = Math.round((pageHeightPx - gridHeightPx) / 2);
-
-  const pages: CardOption[][] = [];
-  for (let i = 0; i < cards.length; i += perPage) pages.push(cards.slice(i, i + perPage));
-  if (pages.length === 0) pages.push([]);
-
-  const format = resolveJsPdfFormat({
-    preset: pageSizePreset,
-    unit: pageSizeUnit,
-    width: pageWidth,
-    height: pageHeight,
-  });
-
-  const pdf = new jsPDF({
-    orientation: pageOrientation,
-    unit: "mm",
-    format,
-    compress: true,
-  });
-
-  const pdfWidth = pageSizeUnit === "in" ? pageWidth * 25.4 : pageWidth;
-  const pdfHeight = pageSizeUnit === "in" ? pageHeight * 25.4 : pageHeight;
-
-  for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
-    const pageCards = pages[pageIndex];
-
-    const canvas = document.createElement("canvas");
-    canvas.width = pageWidthPx;
-    canvas.height = pageHeightPx;
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = PDF_PAGE_COLOR;
-    ctx.fillRect(0, 0, pageWidthPx, pageHeightPx);
-
-    for (let idx = 0; idx < pageCards.length; idx++) {
-      const card = pageCards[idx];
-      const col = idx % columns;
-      const row = Math.floor(idx / columns);
-      const x = startX + col * (cardWidthPx + spacingPx); // NEW
-      const y = startY + row * (cardHeightPx + spacingPx);
-
-      let src =
-        (cachedImageUrls && cachedImageUrls[card.uuid]) ||
-        originalSelectedImages[card.uuid] ||
-        card.imageUrls?.[0] ||
-        "";
-
-      if (!card.isUserUpload && !(cachedImageUrls && cachedImageUrls[card.uuid])) {
-        src = getLocalBleedImageUrl(preferPng(src));
-      }
-
-      const cardCanvas = await buildCardWithBleed(src, bleedPx, {
-        isUserUpload: !!card.isUserUpload,
-        hasBakedBleed: !!card.hasBakedBleed,
-      });
-      ctx.drawImage(cardCanvas, x, y);
-
-      if (bleedEdge) {
-        const scaledGuideWidth = scaleGuideWidthForDPI(guideWidthPx, 96, DPI);
-        drawCornerGuides(ctx, x, y, contentWidthInPx, contentHeightInPx, bleedPx, guideColor, scaledGuideWidth);
-        drawEdgeStubs(
-          ctx,
-          pageWidthPx,
-          pageHeightPx,
-          startX,
-          startY,
-          columns,
-          rows,
-          contentWidthInPx,
-          contentHeightInPx,
-          cardWidthPx,
-          cardHeightPx,
-          bleedPx,
-          scaledGuideWidth,
-          spacingPx
-        );
-      }
+  const throwIfAborted = () => {
+    if (abortSignal?.aborted) {
+      throw new DOMException("Export cancelled", "AbortError");
     }
+  };
 
-    const pageImg = canvas.toDataURL("image/jpeg", 0.95);
-    if (pageIndex > 0) pdf.addPage();
-    pdf.addImage(pageImg, "JPEG", 0, 0, pdfWidth, pdfHeight);
+  throwIfAborted();
+
+  const bleedMm = bleedEdgeWidthMm;
+  const contentWidthMm = CARD_W_MM;
+  const contentHeightMm = CARD_H_MM;
+  const cardWidthMm = contentWidthMm + bleedMm * 2;
+  const cardHeightMm = contentHeightMm + bleedMm * 2;
+  const spacingMm = cardSpacingMm || 0;
+
+  const pageWidthMm = pageSizeUnit === "in" ? pageWidth * MM_PER_INCH : pageWidth;
+  const pageHeightMm = pageSizeUnit === "in" ? pageHeight * MM_PER_INCH : pageHeight;
+
+  const perPage = Math.max(1, columns * rows);
+  const gridWidthMm = columns * cardWidthMm + Math.max(0, columns - 1) * spacingMm;
+  const gridHeightMm = rows * cardHeightMm + Math.max(0, rows - 1) * spacingMm;
+  const startXmm = Math.max(0, (pageWidthMm - gridWidthMm) / 2);
+  const startYmm = Math.max(0, (pageHeightMm - gridHeightMm) / 2);
+
+  // Track whether each page is a front or back page for collated mode
+  const pageTypes: ("front" | "back")[] = [];
+  const pages: CardOption[][] = [];
+
+  if (exportCollated) {
+    // Collated mode: alternating front and back pages
+    for (let i = 0; i < cards.length; i += perPage) {
+      const pageCards = cards.slice(i, i + perPage);
+
+      // Front page (normal order)
+      pages.push([...pageCards]);
+      pageTypes.push("front");
+
+      // Back page (reversed order for proper duplex printing alignment)
+      const backPageCards = [...pageCards].reverse();
+      pages.push(backPageCards);
+      pageTypes.push("back");
+    }
+  } else {
+    // Non-collated mode: all fronts or all backs
+    for (let i = 0; i < cards.length; i += perPage) {
+      const pageCards = cards.slice(i, i + perPage);
+
+      // For backside export, reverse the order of cards on each page
+      // This is because the sheet will be printed on the reverse side
+      if (isBackSide) {
+        pageCards.reverse();
+        pageTypes.push("back");
+      } else {
+        pageTypes.push("front");
+      }
+
+      pages.push(pageCards);
+    }
   }
 
-  pdf.save(`proxxies_${new Date().toISOString().slice(0, 10)}.pdf`);
+  const guideWidthPxScaled = scaleGuideWidthForDPI(guideWidthPx, 96, exportDpi);
+  const guideWidthMm = guideWidthPxScaled > 0 ? guideWidthPxScaled / DPMM(exportDpi) : 0;
+  const guideColorRgb = parseHexColor(guideColor);
+
+  const jpegQuality = exportDpi >= 1200 ? 0.96 : exportDpi >= 900 ? 0.97 : 1.0;
+  const pageSize: [number, number] = [mmToPt(pageWidthMm), mmToPt(pageHeightMm)];
+  const effectivePagesPerBatch = useBatching ? Math.max(1, pagesPerBatch | 0) : pages.length || 1;
+  const batches = useBatching ? chunkPages(pages, effectivePagesPerBatch) : [pages];
+  const totalBatches = batches.length;
+  const dateSlug = new Date().toISOString().slice(0, 10);
+
+  const totalPagesCount = pages.length;
+  const totalCardsCount = cards.length;
+  let processedCards = 0;
+  let currentPageIndex = 0;
+  let processedCardsOnPage = 0;
+  let currentPageCardCount = pages[0]?.length ?? 0;
+
+  const emitProgress = () => {
+    throwIfAborted();
+
+    const overallPercent = totalCardsCount
+      ? Math.round((processedCards / totalCardsCount) * 100)
+      : null;
+    const normalizedOverall = overallPercent === null
+      ? null
+      : processedCards >= totalCardsCount
+        ? 100
+        : Math.min(99, Math.max(0, overallPercent));
+
+    const pagePercent = currentPageCardCount
+      ? Math.round((processedCardsOnPage / currentPageCardCount) * 100)
+      : totalPagesCount > 0
+        ? 100
+        : null;
+    const normalizedPage = pagePercent == null
+      ? null
+      : Math.max(0, Math.min(100, pagePercent));
+
+    onProgress?.({
+      overall: normalizedOverall,
+      pageProgress: normalizedPage,
+      currentPage: totalPagesCount > 0 ? Math.min(totalPagesCount, currentPageIndex + 1) : null,
+      totalPages: totalPagesCount > 0 ? totalPagesCount : null,
+    });
+  };
+
+  emitProgress();
+
+  const renderBatch = async (batchPages: CardOption[][], batchStartIndex: number) => {
+    throwIfAborted();
+    const pdfDoc = await PDFDocument.create();
+
+    for (let pageIndexInBatch = 0; pageIndexInBatch < batchPages.length; pageIndexInBatch++) {
+      const pageCards = batchPages[pageIndexInBatch];
+      const globalPageIndex = batchStartIndex + pageIndexInBatch;
+      const currentPageType = pageTypes[globalPageIndex];
+      const isCurrentPageBack = currentPageType === "back";
+
+      // Determine if we should show guides on this page
+      const shouldShowGuides = useCornerGuides && !(isCurrentPageBack && disableBackPageGuides);
+
+      throwIfAborted();
+      currentPageCardCount = pageCards.length;
+      processedCardsOnPage = 0;
+      emitProgress();
+
+      const page = pdfDoc.addPage(pageSize);
+      page.drawRectangle({
+        x: 0,
+        y: 0,
+        width: pageSize[0],
+        height: pageSize[1],
+        color: rgb(1, 1, 1),
+      });
+
+      for (let idx = 0; idx < pageCards.length; idx++) {
+        throwIfAborted();
+        const card = pageCards[idx];
+        const col = idx % columns;
+        const row = Math.floor(idx / columns);
+
+        const cardXmm = startXmm + col * (cardWidthMm + spacingMm);
+        const cardYmm = startYmm + row * (cardHeightMm + spacingMm);
+
+        let src: string;
+        let useCardbackImage = false;
+        let isBackFace = false;
+
+        if (isCurrentPageBack) {
+          // For backside export, show the OPPOSITE face of what's currently displayed on front
+          if (card.faces && card.faces.length > 1) {
+            const currentFaceIndex = card.currentFaceIndex ?? 0;
+            const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
+            const oppositeFace = card.faces[oppositeFaceIndex];
+
+            if (oppositeFace?.imageUrl) {
+              // Double-faced card - use the opposite face
+              src = getLocalBleedImageUrl(preferPng(oppositeFace.imageUrl));
+              isBackFace = true;
+            } else {
+              // Fallback to cardback
+              src = customCardbackUrl || "/cardback.png";
+              useCardbackImage = true;
+            }
+          } else {
+            // Use cardback (custom or default)
+            src = customCardbackUrl || "/cardback.png";
+            useCardbackImage = true;
+          }
+        } else {
+          // Front side export - normal logic
+          src =
+            (cachedImageUrls && cachedImageUrls[card.uuid]) ||
+            originalSelectedImages[card.uuid] ||
+            card.imageUrls?.[0] ||
+            "";
+        }
+
+        let uploadedUrlToRevoke: string | null = null;
+
+        if (!isBackSide && isUploadedFileToken(src)) {
+          const file = uploadedFiles?.[card.uuid];
+          if (!file) {
+            console.warn(`Skipping card ${card.name} — missing uploaded file data.`);
+            processedCards += 1;
+            processedCardsOnPage += 1;
+            emitProgress();
+            continue;
+          }
+          const objectUrl = URL.createObjectURL(file);
+          uploadedUrlToRevoke = objectUrl;
+          src = objectUrl;
+        }
+
+        if (!isBackSide && !card.isUserUpload && !(cachedImageUrls && cachedImageUrls[card.uuid])) {
+          src = getLocalBleedImageUrl(preferPng(src));
+        }
+
+        try {
+          throwIfAborted();
+          const cardCanvas = await buildCardWithBleed(
+            src,
+            Math.round(bleedMm * DPMM(exportDpi)),
+            {
+              isUserUpload: !!card.isUserUpload || useCardbackImage,
+              hasBakedBleed: useCardbackImage ? customCardbackHasBleed : (isBackFace ? false : !!card.hasBakedBleed),
+            },
+            exportDpi
+          );
+
+          const blob = await canvasToBlob(cardCanvas, "image/jpeg", jpegQuality);
+          const cardBytes = await blob.arrayBuffer();
+          const cardImage = await pdfDoc.embedJpg(cardBytes);
+
+          page.drawImage(cardImage, {
+            x: mmToPt(cardXmm),
+            y: mmToPt(pageHeightMm - cardYmm - cardHeightMm),
+            width: mmToPt(cardWidthMm),
+            height: mmToPt(cardHeightMm),
+          });
+        } finally {
+          if (uploadedUrlToRevoke) {
+            URL.revokeObjectURL(uploadedUrlToRevoke);
+          }
+        }
+
+        if (shouldShowGuides && guideWidthMm > 0) {
+          drawCornerGuidesPdf(page, {
+            xMm: cardXmm,
+            yMm: cardYmm,
+            contentWidthMm,
+            contentHeightMm,
+            bleedMm,
+            guideColor: guideColorRgb,
+            guideWidthMm,
+            pageHeightMm,
+            rounded: roundedCornerGuides,
+            cornerOffsetMm: cornerGuideOffsetMm,
+          });
+        }
+
+        processedCards += 1;
+        processedCardsOnPage += 1;
+        emitProgress();
+      }
+
+      if (shouldShowGuides && guideWidthMm > 0) {
+        drawEdgeStubsPdf(page, {
+          pageWidthMm,
+          pageHeightMm,
+          startXmm,
+          startYmm,
+          columns,
+          rows,
+          contentWidthMm,
+          contentHeightMm,
+          cardWidthMm,
+          cardHeightMm,
+          bleedMm,
+          guideWidthMm,
+          spacingMm,
+        });
+      }
+
+      currentPageIndex += 1;
+    }
+
+    return pdfDoc.save({ useObjectStreams: true });
+  };
+
+  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+    const batchPages = batches[batchIndex];
+    const batchStartIndex = batches.slice(0, batchIndex).reduce((sum, batch) => sum + batch.length, 0);
+    const pdfBytes = await renderBatch(batchPages, batchStartIndex);
+    throwIfAborted();
+    const fileSuffix =
+      totalBatches > 1
+        ? `_part-${String(batchIndex + 1).padStart(2, "0")}-of-${String(totalBatches).padStart(2, "0")}`
+        : "";
+    const backSideSuffix = exportCollated ? "_collated" : (isBackSide ? "_backs" : "");
+    const bytesCopy = pdfBytes.slice();
+    const blob = new Blob([bytesCopy.buffer], { type: "application/pdf" });
+    saveAs(blob, `proxxies_${dateSlug}${backSideSuffix}${fileSuffix}.pdf`);
+  }
+
+  onProgress?.({
+    overall: 100,
+    pageProgress: 100,
+    currentPage: totalPagesCount > 0 ? totalPagesCount : null,
+    totalPages: totalPagesCount > 0 ? totalPagesCount : null,
+  });
 }
