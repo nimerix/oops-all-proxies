@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { isUploadedFileToken, makeUploadedFileToken } from "../helpers/ImageHelper";
 import type { CardOption } from "../types/Card";
 
 type Store = {
@@ -27,6 +28,11 @@ type Store = {
   clearSelectedImage: (uuid: string) => void;
   clearManySelectedImages: (uuids: string[]) => void;
 
+  selectedBackFaceImages: Record<string, string>;
+  setSelectedBackFaceImages: (images: Record<string, string>) => void;
+  appendSelectedBackFaceImages: (newImages: Record<string, string>) => void;
+  clearSelectedBackFaceImage: (uuid: string) => void;
+
   originalSelectedImages: Record<string, string>;
   setOriginalSelectedImages: (images: Record<string, string>) => void;
   appendOriginalSelectedImages: (newImages: Record<string, string>) => void;
@@ -44,7 +50,9 @@ type Store = {
   appendUploadedFiles: (newFiles: Record<string, File>) => void;
 
   removeCardAt: (pos: number) => void;
+  duplicateCardAt: (pos: number) => void;
   clearVolatileForCard: (uuid: string) => void;
+  removeCardsByUuid: (uuids: string[]) => void;
 };
 
 export const useCardsStore = create<Store>()(
@@ -108,6 +116,19 @@ export const useCardsStore = create<Store>()(
           return { selectedImages: newSelected };
         }),
 
+      selectedBackFaceImages: {},
+      setSelectedBackFaceImages: (images) => set({ selectedBackFaceImages: images }),
+      appendSelectedBackFaceImages: (newImages) =>
+        set((state) => ({
+          selectedBackFaceImages: { ...state.selectedBackFaceImages, ...newImages },
+        })),
+      clearSelectedBackFaceImage: (uuid) =>
+        set((state) => {
+          const newSelected = { ...state.selectedBackFaceImages };
+          delete newSelected[uuid];
+          return { selectedBackFaceImages: newSelected };
+        }),
+
       originalSelectedImages: {},
       setOriginalSelectedImages: (images) =>
         set({ originalSelectedImages: images }),
@@ -153,6 +174,7 @@ export const useCardsStore = create<Store>()(
             const uuid = removed.uuid;
             const {
               selectedImages,
+              selectedBackFaceImages,
               originalSelectedImages,
               uploadedImages,
               uploadedOriginalImages,
@@ -161,6 +183,7 @@ export const useCardsStore = create<Store>()(
             } = state;
 
             delete selectedImages[uuid];
+            delete selectedBackFaceImages[uuid];
             delete originalSelectedImages[uuid];
             delete uploadedImages[uuid];
             delete uploadedOriginalImages[uuid];
@@ -170,6 +193,7 @@ export const useCardsStore = create<Store>()(
             return {
               cards,
               selectedImages: { ...selectedImages },
+              selectedBackFaceImages: { ...selectedBackFaceImages },
               originalSelectedImages: { ...originalSelectedImages },
               uploadedImages: { ...uploadedImages },
               uploadedOriginalImages: { ...uploadedOriginalImages },
@@ -180,10 +204,89 @@ export const useCardsStore = create<Store>()(
           return { cards };
         }),
 
+      duplicateCardAt: (pos) =>
+        set((state) => {
+          const cards = [...state.cards];
+          const cardToDuplicate = cards[pos];
+          if (!cardToDuplicate) return {};
+
+          const newUuid = crypto.randomUUID();
+          const duplicatedCard: CardOption = {
+            ...cardToDuplicate,
+            uuid: newUuid,
+          };
+
+          // Insert the duplicate right after the original
+          cards.splice(pos + 1, 0, duplicatedCard);
+
+          // Copy over all associated data with the new UUID
+          const oldUuid = cardToDuplicate.uuid;
+          const {
+            selectedImages,
+            selectedBackFaceImages,
+            originalSelectedImages,
+            uploadedImages,
+            uploadedOriginalImages,
+            uploadedFiles,
+            cachedImageUrls,
+          } = state;
+
+          const updates: any = { cards };
+
+          if (selectedImages[oldUuid]) {
+            updates.selectedImages = {
+              ...selectedImages,
+              [newUuid]: selectedImages[oldUuid],
+            };
+          }
+          if (selectedBackFaceImages[oldUuid]) {
+            updates.selectedBackFaceImages = {
+              ...selectedBackFaceImages,
+              [newUuid]: selectedBackFaceImages[oldUuid],
+            };
+          }
+          if (originalSelectedImages[oldUuid]) {
+            const originalValue = originalSelectedImages[oldUuid];
+            updates.originalSelectedImages = {
+              ...originalSelectedImages,
+              [newUuid]: isUploadedFileToken(originalValue)
+                ? makeUploadedFileToken(newUuid)
+                : originalValue,
+            };
+          }
+          if (uploadedImages[oldUuid]) {
+            updates.uploadedImages = {
+              ...uploadedImages,
+              [newUuid]: uploadedImages[oldUuid],
+            };
+          }
+          if (uploadedOriginalImages[oldUuid]) {
+            updates.uploadedOriginalImages = {
+              ...uploadedOriginalImages,
+              [newUuid]: uploadedOriginalImages[oldUuid],
+            };
+          }
+          if (uploadedFiles[oldUuid]) {
+            updates.uploadedFiles = {
+              ...uploadedFiles,
+              [newUuid]: uploadedFiles[oldUuid],
+            };
+          }
+          if (cachedImageUrls[oldUuid]) {
+            updates.cachedImageUrls = {
+              ...cachedImageUrls,
+              [newUuid]: cachedImageUrls[oldUuid],
+            };
+          }
+
+          return updates;
+        }),
+
       clearVolatileForCard: (uuid) =>
         set((state) => {
           const {
             selectedImages,
+            selectedBackFaceImages,
             originalSelectedImages,
             uploadedImages,
             uploadedOriginalImages,
@@ -191,6 +294,7 @@ export const useCardsStore = create<Store>()(
             cachedImageUrls,
           } = state;
           delete selectedImages[uuid];
+          delete selectedBackFaceImages[uuid];
           delete originalSelectedImages[uuid];
           delete uploadedImages[uuid];
           delete uploadedOriginalImages[uuid];
@@ -199,11 +303,42 @@ export const useCardsStore = create<Store>()(
 
           return {
             selectedImages: { ...selectedImages },
+            selectedBackFaceImages: { ...selectedBackFaceImages },
             originalSelectedImages: { ...originalSelectedImages },
             uploadedImages: { ...uploadedImages },
             uploadedOriginalImages: { ...uploadedOriginalImages },
             uploadedFiles: { ...uploadedFiles },
             cachedImageUrls: { ...cachedImageUrls },
+          };
+        }),
+
+      removeCardsByUuid: (uuids) =>
+        set((state) => {
+          if (!uuids?.length) return {};
+          const removeSet = new Set(uuids);
+          const cards = state.cards.filter((card) => !removeSet.has(card.uuid));
+          if (cards.length === state.cards.length) {
+            return {};
+          }
+
+          const strip = (map: Record<string, any>) => {
+            if (!map) return map;
+            const clone = { ...map };
+            for (const id of removeSet) {
+              delete clone[id];
+            }
+            return clone;
+          };
+
+          return {
+            cards,
+            selectedImages: strip(state.selectedImages),
+            selectedBackFaceImages: strip(state.selectedBackFaceImages),
+            originalSelectedImages: strip(state.originalSelectedImages),
+            uploadedImages: strip(state.uploadedImages),
+            uploadedOriginalImages: strip(state.uploadedOriginalImages),
+            uploadedFiles: strip(state.uploadedFiles),
+            cachedImageUrls: strip(state.cachedImageUrls),
           };
         }),
     }),
