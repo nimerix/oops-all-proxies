@@ -1,6 +1,7 @@
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
+const fsPromises = require("fs").promises;
 const axios = require("axios");
 const multer = require("multer");
 const crypto = require("crypto");
@@ -18,34 +19,69 @@ const AX = axios.create({
   validateStatus: (s) => s >= 200 && s < 500,      // surface 4xx/429 to logic
 });
 
-// Light retry for 429 / transient errors
-async function getWithRetry(url, opts = {}, tries = 3) {
+// Retry logic with exponential backoff for 429 / transient errors
+async function getWithRetry(url, opts = {}, tries = 5) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await AX.get(url, opts);
+
+      // Success
+      if (res.status >= 200 && res.status < 300) return res;
+
+      // Handle rate limiting - retry with backoff
       if (res.status === 429) {
-        const wait = Number(res.headers["retry-after"] || 2);
+        const retryAfter = Number(res.headers["retry-after"] || 0);
+        const wait = retryAfter > 0 ? retryAfter : Math.min(60, Math.pow(2, i));
+        console.log(`[429] Rate limited, waiting ${wait}s before retry ${i + 1}/${tries}`);
         await new Promise(r => setTimeout(r, wait * 1000));
         continue;
       }
-      if (res.status >= 200 && res.status < 300) return res;
+
+      // Client errors (4xx except 429) should NOT be retried (404, etc.)
+      if (res.status >= 400 && res.status < 500) {
+        const err = new Error(`HTTP ${res.status}`);
+        err.status = res.status;
+        err.response = res;
+        throw err;
+      }
+
+      // Server errors (5xx) - will be retried below
       throw new Error(`HTTP ${res.status}`);
     } catch (e) {
       lastErr = e;
-      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+
+      // Don't retry client errors (4xx except 429)
+      // Check both e.status (from our custom throw) and e.response.status (from axios)
+      const status = e.status || (e.response && e.response.status);
+      if (status >= 400 && status < 500 && status !== 429) {
+        throw e;
+      }
+
+      // Retry network errors and server errors (5xx) with exponential backoff
+      if (i < tries - 1) {
+        const backoff = 500 * Math.pow(2, i);
+        await new Promise(r => setTimeout(r, backoff));
+      }
     }
   }
   throw lastErr;
 }
 
 // Tiny p-limit (cap parallel Scryfall calls)
-function pLimit(concurrency) {
+function pLimit(concurrency, delayMs = 0) {
   const q = [];
   let active = 0;
   const run = async (fn, resolve, reject) => {
     active++;
-    try { resolve(await fn()); }
+    try {
+      const result = await fn();
+      // Add delay between requests to avoid rate limiting
+      if (delayMs > 0 && q.length > 0) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+      resolve(result);
+    }
     catch (e) { reject(e); }
     finally {
       active--;
@@ -60,21 +96,27 @@ function pLimit(concurrency) {
     else q.push([fn, resolve, reject]);
   });
 }
-const limit = pLimit(6); // 6 at a time is a safe default
+// Scryfall rate limit is ~10 requests/second
+// Use 2 concurrent with 150ms delay = ~6.6 requests/second (safe margin)
+const limit = pLimit(2, 150);
 
 // -------------------- cache helpers --------------------
 
 const imageRouter = express.Router();
 
 const cacheDir = path.join(__dirname, "..", "cached-images");
-if (!fs.existsSync(cacheDir)) {
-  fs.mkdirSync(cacheDir);
-}
-
 const uploadDir = path.join(__dirname, "..", "uploaded-images");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+
+// Initialize directories asynchronously
+(async () => {
+  try {
+    await fsPromises.mkdir(cacheDir, { recursive: true });
+    await fsPromises.mkdir(uploadDir, { recursive: true });
+  } catch (err) {
+    console.error("Failed to create cache/upload directories:", err);
+  }
+})();
+
 const upload = multer({ dest: uploadDir });
 
 // Make a stable cache filename from the FULL raw URL (path + query)
@@ -120,26 +162,99 @@ imageRouter.post("/", async (req, res) => {
   const started = Date.now();
 
   try {
+    // When fetching all prints, we need to return multiple cards per name
+    if (unique === "prints") {
+      const allResults = [];
+
+      for (const ci of infos) {
+        try {
+          const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("scryfall-timeout")), 20000));
+          const task = (async () => {
+            // For prints, fetch all printings directly
+            const { fetchCardsByQuery } = require("../utils/getCardImagesPaged");
+            const q = `!"${ci.name}" include:extras unique:prints lang:${(ci.language || "en").toLowerCase()}`;
+            console.log(`[Prints] Querying: ${q}`);
+            let cards = await fetchCardsByQuery(q);
+
+            if (!cards.length && fallbackToEnglish && ci.language !== "en") {
+              const qEn = `!"${ci.name}" include:extras unique:prints lang:en`;
+              console.log(`[Prints] Fallback query: ${qEn}`);
+              cards = await fetchCardsByQuery(qEn);
+            }
+
+            console.log(`[Prints] Found ${cards.length} printings for "${ci.name}"`);
+
+            return cards.map(cardData => {
+              // Ensure imageUrls is populated from faces if needed
+              let imageUrls = cardData.imageUrls || [];
+              if (imageUrls.length === 0 && cardData.faces && cardData.faces.length > 0) {
+                imageUrls = cardData.faces.map(face => face.imageUrl).filter(Boolean);
+              }
+
+              return {
+                name: ci.name,
+                set: cardData.set,
+                number: cardData.collector_number,
+                imageUrls,
+                language: ci.language,
+                layout: cardData.layout,
+                faces: cardData.faces,
+              };
+            });
+          })();
+
+          const result = await Promise.race([task, timeout]);
+          allResults.push(...result);
+        } catch (err) {
+          // On timeout/error, return empty object
+          console.error(`[Prints] Error fetching prints for "${ci.name}":`, err?.message);
+          allResults.push({
+            name: ci.name,
+            set: ci.set,
+            number: ci.number,
+            imageUrls: [],
+            language: ci.language,
+            layout: null,
+            faces: null,
+          });
+        }
+      }
+
+      console.log(`[Prints] Returning ${allResults.length} total results`);
+      return res.json(allResults);
+    }
+
+    // For unique:art (default), return one card per name
     const results = await Promise.all(
       infos.map((ci) =>
         limit(async () => {
-          // 20s safety timeout per card so one slow POP can’t hang everything
+          // 20s safety timeout per card so one slow POP can't hang everything
           const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("scryfall-timeout")), 20000));
           const task = (async () => {
-            const imageUrls = await getImagesForCardInfo(ci, unique, ci.language, fallbackToEnglish);
+            const cardData = await getImagesForCardInfo(ci, unique, ci.language, fallbackToEnglish);
             return {
               name: ci.name,
-              set: ci.set,
-              number: ci.number,
-              imageUrls,
+              set: cardData.set || ci.set,
+              number: cardData.collector_number || ci.number,
+              imageUrls: cardData.imageUrls || [],
               language: ci.language,
+              layout: cardData.layout,
+              faces: cardData.faces,
             };
           })();
           try {
             return await Promise.race([task, timeout]);
           } catch {
-            // On timeout/error, return empty list (UI won’t spin forever)
-            return { name: ci.name, set: ci.set, number: ci.number, imageUrls: [], language: ci.language };
+            // On timeout/error, return empty list (UI won't spin forever)
+            return {
+              name: ci.name,
+              set: ci.set,
+              number: ci.number,
+              imageUrls: [],
+              language: ci.language,
+              layout: null,
+              faces: null,
+            };
           }
         })
       )
@@ -169,12 +284,16 @@ imageRouter.get("/proxy", async (req, res) => {
   const localPath = cachePathFromUrl(originalUrl);
 
   try {
-    if (fs.existsSync(localPath)) {
+    // Check if file exists using async access
+    try {
+      await fsPromises.access(localPath);
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       return res.sendFile(localPath);
+    } catch {
+      // File doesn't exist, proceed to download
     }
 
-    const response = await getWithRetry(originalUrl, { responseType: "arraybuffer", timeout: 12000 }, 3);
+    const response = await getWithRetry(originalUrl, { responseType: "arraybuffer", timeout: 12000, maxContentLength: 50 * 1024 * 1024 }, 3);
     if (response.status >= 400 || !response.data) {
       return res.status(502).json({ error: "Upstream error", status: response.status });
     }
@@ -184,7 +303,7 @@ imageRouter.get("/proxy", async (req, res) => {
       return res.status(502).json({ error: "Upstream not image", ct });
     }
 
-    fs.writeFileSync(localPath, Buffer.from(response.data));
+    await fsPromises.writeFile(localPath, Buffer.from(response.data));
 
     res.setHeader("Content-Type", ct);
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
@@ -197,13 +316,10 @@ imageRouter.get("/proxy", async (req, res) => {
 
 // -------------------- maintenance & uploads --------------------
 
-imageRouter.delete("/", (req, res) => {
+imageRouter.delete("/", async (req, res) => {
   const started = Date.now();
-  fs.readdir(cacheDir, (err, files) => {
-    if (err) {
-      console.error("Error reading cache directory:", err.message);
-      return res.status(500).json({ error: "Failed to read cache directory" });
-    }
+  try {
+    const files = await fsPromises.readdir(cacheDir);
 
     // Respond right away so the client UI never looks stuck
     res.json({ message: "Cached images clearing started.", count: files.length });
@@ -213,17 +329,25 @@ imageRouter.delete("/", (req, res) => {
       return;
     }
 
-    let remaining = files.length;
-    for (const file of files) {
-      const filePath = path.join(cacheDir, file);
-      fs.unlink(filePath, (unlinkErr) => {
-        if (unlinkErr) console.warn(`Failed to delete ${filePath}:`, unlinkErr.message);
-        if (--remaining === 0) {
-          console.log(`[DELETE /images] removed ${files.length} in ${Date.now() - started}ms`);
+    // Delete files in parallel using Promise.all
+    await Promise.all(
+      files.map(async (file) => {
+        const filePath = path.join(cacheDir, file);
+        try {
+          await fsPromises.unlink(filePath);
+        } catch (unlinkErr) {
+          console.warn(`Failed to delete ${filePath}:`, unlinkErr.message);
         }
-      });
+      })
+    );
+
+    console.log(`[DELETE /images] removed ${files.length} in ${Date.now() - started}ms`);
+  } catch (err) {
+    console.error("Error reading cache directory:", err.message);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: "Failed to read cache directory" });
     }
-  });
+  }
 });
 
 imageRouter.post("/upload", upload.array("images"), (req, res) => {
