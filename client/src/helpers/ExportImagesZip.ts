@@ -13,6 +13,25 @@ function sanitizeFilename(name: string): string {
   );
 }
 
+function generateScryfallFilename(card: CardOption, faceName?: string): string {
+  const name = faceName || card.name;
+
+  // Convert to lowercase and replace spaces/special chars with dashes
+  const namePart = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")  // Replace non-alphanumeric with dashes
+    .replace(/^-+|-+$/g, "");      // Trim leading/trailing dashes
+
+  // Build filename: set-number-name or just name if no set info
+  if (card.set && card.number) {
+    return `${card.set.toLowerCase()}-${card.number}-${namePart}`;
+  } else if (card.set) {
+    return `${card.set.toLowerCase()}-${namePart}`;
+  } else {
+    return namePart;
+  }
+}
+
 function getLocalBleedImageUrl(originalUrl: string) {
   return `${API_BASE}/api/cards/images/proxy?url=${encodeURIComponent(originalUrl)}`;
 }
@@ -39,6 +58,8 @@ type ExportOpts = {
   fileBaseName?: string; // default: card_images_YYYY-MM-DD
   concurrency?: number;  // default: 6
   includeDoubleFaces?: boolean; // default: false - include both sides of double-faced cards
+  useOriginalCardNames?: boolean; // default: false - use Scryfall-style filenames
+  prefixIndexToExportNames?: boolean; // default: true - add index prefix to filenames
 };
 
 export async function ExportImagesZip(opts: ExportOpts) {
@@ -50,6 +71,8 @@ export async function ExportImagesZip(opts: ExportOpts) {
     fileBaseName,
     concurrency = 6,
     includeDoubleFaces = false,
+    useOriginalCardNames = false,
+    prefixIndexToExportNames = true,
   } = opts;
 
   const zip = new JSZip();
@@ -59,7 +82,6 @@ export async function ExportImagesZip(opts: ExportOpts) {
   const tasks: Array<() => Promise<any>> = [];
 
   cards.forEach((c, i) => {
-    const baseName = sanitizeFilename(c.name || `Card ${i + 1}`);
     const idx = String(i + 1).padStart(3, "0");
 
     // Determine which faces to export
@@ -119,11 +141,21 @@ export async function ExportImagesZip(opts: ExportOpts) {
         source = { kind: "url", url };
       }
 
-      const faceNameSuffix =
-        facesToExport.length > 1 && faceInfo.faceName
-          ? ` (${sanitizeFilename(faceInfo.faceName)})`
-          : "";
-      const effectiveBaseName = `${baseName}${faceNameSuffix}`;
+      // Generate base filename based on settings
+      let baseName: string;
+      if (useOriginalCardNames) {
+        // Use Scryfall-style filename
+        baseName = generateScryfallFilename(c, faceInfo.faceName);
+      } else {
+        // Use sanitized card name
+        const cardName = faceInfo.faceName || c.name || `Card ${i + 1}`;
+        baseName = sanitizeFilename(cardName);
+
+        // Add face suffix for multi-face cards
+        if (facesToExport.length > 1 && faceInfo.faceName) {
+          baseName = `${sanitizeFilename(c.name)} (${sanitizeFilename(faceInfo.faceName)})`;
+        }
+      }
 
       // Create task for this face
       tasks.push(async () => {
@@ -143,8 +175,8 @@ export async function ExportImagesZip(opts: ExportOpts) {
           }
 
           // de-dupe filenames per printed order
-          const count = (usedNames.get(effectiveBaseName) ?? 0) + 1;
-          usedNames.set(effectiveBaseName, count);
+          const count = (usedNames.get(baseName) ?? 0) + 1;
+          usedNames.set(baseName, count);
           const suffix = count > 1 ? ` (${count})` : "";
 
           // Try to keep the right extension if we know it; default to .png
@@ -157,7 +189,14 @@ export async function ExportImagesZip(opts: ExportOpts) {
                   ? "png"
                   : "png";
 
-          const filename = `${idx} - ${effectiveBaseName}${suffix}.${ext}`;
+          // Build final filename with optional index prefix
+          let filename: string;
+          if (prefixIndexToExportNames) {
+            filename = `${idx} - ${baseName}${suffix}.${ext}`;
+          } else {
+            filename = `${baseName}${suffix}.${ext}`;
+          }
+
           zip.file(filename, blob);
           return true;
         } catch (err) {

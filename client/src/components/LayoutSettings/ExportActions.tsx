@@ -39,6 +39,8 @@ export function ExportActions() {
   const customCardbackHasBleed = useSettingsStore((state) => state.customCardbackHasBleed);
   const disableBackPageGuides = useSettingsStore((state) => state.disableBackPageGuides);
   const exportCollated = useSettingsStore((state) => state.exportCollated);
+  const useOriginalCardNames = useSettingsStore((state) => state.useOriginalCardNames);
+  const prefixIndexToExportNames = useSettingsStore((state) => state.prefixIndexToExportNames);
 
   const handleCopyDecklist = async () => {
     const text = buildDecklist(cards, { style: "withSetNum", sort: "alpha" });
@@ -163,6 +165,8 @@ export function ExportActions() {
             uploadedFiles,
             fileBaseName: "card_images",
             includeDoubleFaces: includeDoubleFacesInZip,
+            useOriginalCardNames,
+            prefixIndexToExportNames,
           });
         }}
         disabled={!cards.length}
