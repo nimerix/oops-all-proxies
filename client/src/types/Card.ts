@@ -10,6 +10,7 @@ export interface CardOption {
   imageUrls: string[];
   isUserUpload: boolean;
   hasBakedBleed?: boolean;
+  hasBackImage?: boolean;
   set?: string;
   number?: string;
   lang?: string;

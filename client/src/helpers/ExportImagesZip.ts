@@ -53,8 +53,10 @@ function preferPng(url: string) {
 type ExportOpts = {
   cards: CardOption[];
   originalSelectedImages: Record<string, string>;
-  cachedImageUrls?: Record<string, string>;   // <-- NEW
+  cachedImageUrls?: Record<string, string>;
   uploadedFiles?: Record<string, File>;
+  originalSelectedBackImages?: Record<string, string>;
+  uploadedBackFiles?: Record<string, File>;
   fileBaseName?: string; // default: card_images_YYYY-MM-DD
   concurrency?: number;  // default: 6
   includeDoubleFaces?: boolean; // default: false - include both sides of double-faced cards
@@ -68,6 +70,8 @@ export async function ExportImagesZip(opts: ExportOpts) {
     originalSelectedImages,
     cachedImageUrls,
     uploadedFiles,
+    originalSelectedBackImages,
+    uploadedBackFiles,
     fileBaseName,
     concurrency = 6,
     includeDoubleFaces = false,
@@ -85,36 +89,45 @@ export async function ExportImagesZip(opts: ExportOpts) {
     const idx = String(i + 1).padStart(3, "0");
 
     // Determine which faces to export
-    const facesToExport: Array<{ url: string; faceName?: string; faceIndex?: number }> = [];
+    const facesToExport: Array<{ url: string; faceName?: string; faceIndex?: number; isBackSide?: boolean }> = [];
+    const hasUploadedBackImage = originalSelectedBackImages?.[c.uuid];
 
-    if (includeDoubleFaces && c.faces && c.faces.length > 1) {
-      // Export all faces for double-faced cards
-      c.faces.forEach((face, loopIdx) => {
-        // First try face.imageUrl (most reliable for multi-face cards)
-        // Then try imageUrls array using face.faceIndex or loop index
-        const faceUrl =
-          face.imageUrl ||
-          c.imageUrls?.[face.faceIndex ?? loopIdx];
+    if (includeDoubleFaces) {
+      // Export front side
+      const frontSource =
+        (cachedImageUrls && cachedImageUrls[c.uuid]) ||
+        originalSelectedImages[c.uuid] ||
+        (c.faces && c.faces.length > 0
+          ? c.faces[c.currentFaceIndex ?? 0]?.imageUrl
+          : c.imageUrls?.[0]) ||
+        "";
 
-        if (faceUrl) {
-          facesToExport.push({
-            url: faceUrl,
-            faceName: face.name,
-            faceIndex: face.faceIndex ?? loopIdx,
-          });
-        } else {
-          console.warn(`[Export] No URL found for face "${face.name}" of card "${c.name}"`);
-        }
-      });
+      if (frontSource) {
+        facesToExport.push({ url: frontSource, faceName: c.name });
+      }
 
-      // If no faces were found, fall back to single-face logic
-      if (facesToExport.length === 0 && c.imageUrls && c.imageUrls.length > 0) {
-        console.warn(`[Export] Double-faced card "${c.name}" has no face URLs, falling back to imageUrls array`);
-        c.imageUrls.forEach((url, idx) => {
-          if (url) {
-            facesToExport.push({ url, faceIndex: idx });
-          }
+      // Export back side - priority: 1) uploaded back image, 2) double-faced card back
+      if (hasUploadedBackImage) {
+        // User uploaded a custom back image
+        facesToExport.push({
+          url: hasUploadedBackImage,
+          faceName: `${c.name} (Back)`,
+          isBackSide: true,
         });
+      } else if (c.faces && c.faces.length > 1) {
+        // Export the opposite face for double-faced cards
+        const currentFaceIndex = c.currentFaceIndex ?? 0;
+        const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
+        const oppositeFace = c.faces[oppositeFaceIndex];
+
+        if (oppositeFace?.imageUrl) {
+          facesToExport.push({
+            url: oppositeFace.imageUrl,
+            faceName: oppositeFace.name,
+            faceIndex: oppositeFaceIndex,
+            isBackSide: true,
+          });
+        }
       }
     } else {
       // Export only current/selected face
@@ -139,7 +152,11 @@ export async function ExportImagesZip(opts: ExportOpts) {
         | null = null;
 
       if (isUploadedFileToken(faceInfo.url)) {
-        const file = uploadedFiles?.[c.uuid];
+        // Check if this is a back side uploaded file or front side
+        const file = faceInfo.isBackSide
+          ? uploadedBackFiles?.[c.uuid]
+          : uploadedFiles?.[c.uuid];
+
         if (!file) {
           console.warn(`[Export skipped] Missing uploaded file for card ${c.name}`);
           tasks.push(async () => null);

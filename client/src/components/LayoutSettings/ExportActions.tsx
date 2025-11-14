@@ -14,6 +14,8 @@ export function ExportActions() {
   );
   const cachedImageUrls = useCardsStore((state) => state.cachedImageUrls);
   const uploadedFiles = useCardsStore((state) => state.uploadedFiles);
+  const originalSelectedBackImages = useCardsStore((state) => state.originalSelectedBackImages);
+  const uploadedBackFiles = useCardsStore((state) => state.uploadedBackFiles);
 
   const isProcessing = useSettingsStore((state) => state.isProcessing);
   const pageOrientation = useSettingsStore((state) => state.pageOrientation);
@@ -73,6 +75,8 @@ export function ExportActions() {
         originalSelectedImages,
         cachedImageUrls,
         uploadedFiles,
+        originalSelectedBackImages,
+        uploadedBackFiles,
         useCornerGuides: isBackSide && disableBackPageGuides ? false : useCornerGuides,
         bleedEdgeWidthMm: bleedEdgeWidth,
         guideColor,
@@ -163,6 +167,8 @@ export function ExportActions() {
             originalSelectedImages,
             cachedImageUrls,
             uploadedFiles,
+            originalSelectedBackImages,
+            uploadedBackFiles,
             fileBaseName: "card_images",
             includeDoubleFaces: includeDoubleFacesInZip,
             useOriginalCardNames,

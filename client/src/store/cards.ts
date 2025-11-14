@@ -49,6 +49,14 @@ type Store = {
   setUploadedFiles: (files: Record<string, File>) => void;
   appendUploadedFiles: (newFiles: Record<string, File>) => void;
 
+  uploadedBackFiles: Record<string, File>;
+  setUploadedBackFiles: (files: Record<string, File>) => void;
+  appendUploadedBackFiles: (newFiles: Record<string, File>) => void;
+
+  originalSelectedBackImages: Record<string, string>;
+  setOriginalSelectedBackImages: (images: Record<string, string>) => void;
+  appendOriginalSelectedBackImages: (newImages: Record<string, string>) => void;
+
   removeCardAt: (pos: number) => void;
   duplicateCardAt: (pos: number) => void;
   clearVolatileForCard: (uuid: string) => void;
@@ -165,6 +173,24 @@ export const useCardsStore = create<Store>()(
           uploadedFiles: { ...state.uploadedFiles, ...newFiles },
         })),
 
+      uploadedBackFiles: {},
+      setUploadedBackFiles: (files) => set({ uploadedBackFiles: files }),
+      appendUploadedBackFiles: (newFiles) =>
+        set((state) => ({
+          uploadedBackFiles: { ...state.uploadedBackFiles, ...newFiles },
+        })),
+
+      originalSelectedBackImages: {},
+      setOriginalSelectedBackImages: (images) =>
+        set({ originalSelectedBackImages: images }),
+      appendOriginalSelectedBackImages: (newImages) =>
+        set((state) => ({
+          originalSelectedBackImages: {
+            ...state.originalSelectedBackImages,
+            ...newImages,
+          },
+        })),
+
       // helpers
       removeCardAt: (pos) =>
         set((state) => {
@@ -179,6 +205,8 @@ export const useCardsStore = create<Store>()(
               uploadedImages,
               uploadedOriginalImages,
               uploadedFiles,
+              uploadedBackFiles,
+              originalSelectedBackImages,
               cachedImageUrls,
             } = state;
 
@@ -188,6 +216,8 @@ export const useCardsStore = create<Store>()(
             delete uploadedImages[uuid];
             delete uploadedOriginalImages[uuid];
             delete uploadedFiles[uuid];
+            delete uploadedBackFiles[uuid];
+            delete originalSelectedBackImages[uuid];
             delete cachedImageUrls[uuid];
 
             return {
@@ -198,6 +228,8 @@ export const useCardsStore = create<Store>()(
               uploadedImages: { ...uploadedImages },
               uploadedOriginalImages: { ...uploadedOriginalImages },
               uploadedFiles: { ...uploadedFiles },
+              uploadedBackFiles: { ...uploadedBackFiles },
+              originalSelectedBackImages: { ...originalSelectedBackImages },
               cachedImageUrls: { ...cachedImageUrls },
             };
           }
@@ -228,6 +260,8 @@ export const useCardsStore = create<Store>()(
             uploadedImages,
             uploadedOriginalImages,
             uploadedFiles,
+            uploadedBackFiles,
+            originalSelectedBackImages,
             cachedImageUrls,
           } = state;
 
@@ -272,6 +306,21 @@ export const useCardsStore = create<Store>()(
               [newUuid]: uploadedFiles[oldUuid],
             };
           }
+          if (uploadedBackFiles[oldUuid]) {
+            updates.uploadedBackFiles = {
+              ...uploadedBackFiles,
+              [newUuid]: uploadedBackFiles[oldUuid],
+            };
+          }
+          if (originalSelectedBackImages[oldUuid]) {
+            const originalBackValue = originalSelectedBackImages[oldUuid];
+            updates.originalSelectedBackImages = {
+              ...originalSelectedBackImages,
+              [newUuid]: isUploadedFileToken(originalBackValue)
+                ? makeUploadedFileToken(newUuid)
+                : originalBackValue,
+            };
+          }
           if (cachedImageUrls[oldUuid]) {
             updates.cachedImageUrls = {
               ...cachedImageUrls,
@@ -291,6 +340,8 @@ export const useCardsStore = create<Store>()(
             uploadedImages,
             uploadedOriginalImages,
             uploadedFiles,
+            uploadedBackFiles,
+            originalSelectedBackImages,
             cachedImageUrls,
           } = state;
           delete selectedImages[uuid];
@@ -299,6 +350,8 @@ export const useCardsStore = create<Store>()(
           delete uploadedImages[uuid];
           delete uploadedOriginalImages[uuid];
           delete uploadedFiles[uuid];
+          delete uploadedBackFiles[uuid];
+          delete originalSelectedBackImages[uuid];
           delete cachedImageUrls[uuid];
 
           return {
@@ -308,6 +361,8 @@ export const useCardsStore = create<Store>()(
             uploadedImages: { ...uploadedImages },
             uploadedOriginalImages: { ...uploadedOriginalImages },
             uploadedFiles: { ...uploadedFiles },
+            uploadedBackFiles: { ...uploadedBackFiles },
+            originalSelectedBackImages: { ...originalSelectedBackImages },
             cachedImageUrls: { ...cachedImageUrls },
           };
         }),
@@ -338,6 +393,8 @@ export const useCardsStore = create<Store>()(
             uploadedImages: strip(state.uploadedImages),
             uploadedOriginalImages: strip(state.uploadedOriginalImages),
             uploadedFiles: strip(state.uploadedFiles),
+            uploadedBackFiles: strip(state.uploadedBackFiles),
+            originalSelectedBackImages: strip(state.originalSelectedBackImages),
             cachedImageUrls: strip(state.cachedImageUrls),
           };
         }),

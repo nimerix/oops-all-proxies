@@ -30,6 +30,8 @@ export function useImageProcessing({
     (state) => state.originalSelectedImages
   );
   const uploadedFiles = useCardsStore((state) => state.uploadedFiles);
+  const uploadedBackFiles = useCardsStore((state) => state.uploadedBackFiles);
+  const originalSelectedBackImages = useCardsStore((state) => state.originalSelectedBackImages);
   const appendSelectedImages = useCardsStore(
     (state) => state.appendSelectedImages
   );
@@ -149,34 +151,51 @@ export function useImageProcessing({
     const uuid = card.uuid;
     if (selectedBackFaceImages[uuid]) return;
 
-    // Check if card has multiple faces
-    if (!card.faces || card.faces.length < 2) return;
+    // Check if card has uploaded back image
+    const hasUploadedBackImage = originalSelectedBackImages[uuid];
+    const hasDoubleFace = card.faces && card.faces.length >= 2;
 
-    // For back view, show the OPPOSITE face of what's currently displayed on front
-    const currentFaceIndex = card.currentFaceIndex ?? 0;
-    const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
-    const oppositeFace = card.faces[oppositeFaceIndex];
-
-    if (!oppositeFace?.imageUrl) return;
+    if (!hasUploadedBackImage && !hasDoubleFace) return;
 
     const backFaceKey = `${uuid}-back`;
     const existing = inFlight.current[backFaceKey];
     if (existing) return existing;
 
     const p = (async () => {
-      const backFaceUrl = getLocalBleedImageUrl(oppositeFace.imageUrl);
-
       setLoadingMap((m) => ({ ...m, [uuid]: "loading" }));
+      let revokeUrl: string | null = null;
       try {
-        const resolvedSrc = await urlToDataUrl(backFaceUrl);
+        let resolvedSrc: string;
+
+        if (hasUploadedBackImage) {
+          // Process user-uploaded back image
+          const backFile = uploadedBackFiles[uuid];
+          if (!backFile) return;
+
+          resolvedSrc = URL.createObjectURL(backFile);
+          revokeUrl = resolvedSrc;
+        } else if (hasDoubleFace) {
+          // Process double-faced card from Scryfall
+          const currentFaceIndex = card.currentFaceIndex ?? 0;
+          const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
+          const oppositeFace = card.faces![oppositeFaceIndex];
+
+          if (!oppositeFace?.imageUrl) return;
+
+          const backFaceUrl = getLocalBleedImageUrl(oppositeFace.imageUrl);
+          resolvedSrc = await urlToDataUrl(backFaceUrl);
+        } else {
+          return;
+        }
 
         let processedUrl: string | null = null;
         try {
-          // Back faces from Scryfall don't have baked-in bleed
+          // User uploads may have baked bleed, Scryfall back faces don't
+          const hasBakedBleed = hasUploadedBackImage ? (card.hasBakedBleed ?? false) : false;
           processedUrl = await addBleedEdgeSmartly(resolvedSrc, bleedEdgeWidth, {
             unit,
             bleedEdgeWidth,
-            hasBakedBleed: false,
+            hasBakedBleed,
           });
           const useHighQuality = useSettingsStore.getState().useHighQualityPreviews;
           const dpi = useHighQuality ? HIGH_QUALITY_PREVIEW_DPI : PREVIEW_CARD_DPI;
@@ -199,6 +218,7 @@ export function useImageProcessing({
         console.error("ensureBackFaceProcessed error for", card.name, e);
         setLoadingMap((m) => ({ ...m, [uuid]: "error" }));
       } finally {
+        if (revokeUrl) URL.revokeObjectURL(revokeUrl);
         delete inFlight.current[backFaceKey];
       }
     })();

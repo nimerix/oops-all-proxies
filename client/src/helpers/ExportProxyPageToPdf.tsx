@@ -753,6 +753,8 @@ export async function exportProxyPagesToPdf({
   originalSelectedImages,
   cachedImageUrls,
   uploadedFiles,
+  originalSelectedBackImages,
+  uploadedBackFiles,
   useCornerGuides,
   bleedEdgeWidthMm,
   guideColor,
@@ -782,6 +784,8 @@ export async function exportProxyPagesToPdf({
   originalSelectedImages: Record<string, string>;
   cachedImageUrls?: Record<string, string>;
   uploadedFiles?: Record<string, File>;
+  originalSelectedBackImages?: Record<string, string>;
+  uploadedBackFiles?: Record<string, File>;
   useCornerGuides: boolean;
   bleedEdgeWidthMm: number;
   guideColor: string;
@@ -959,14 +963,20 @@ export async function exportProxyPagesToPdf({
         let isBackFace = false;
 
         if (isCurrentPageBack) {
-          // For backside export, show the OPPOSITE face of what's currently displayed on front
-          if (card.faces && card.faces.length > 1) {
+          // Priority: 1) User-uploaded back image, 2) Double-faced card back, 3) Cardback
+          const hasUploadedBackImage = originalSelectedBackImages?.[card.uuid];
+
+          if (hasUploadedBackImage) {
+            // User uploaded a custom back image
+            src = hasUploadedBackImage;
+            isBackFace = true;
+          } else if (card.faces && card.faces.length > 1) {
+            // Double-faced card - use the opposite face
             const currentFaceIndex = card.currentFaceIndex ?? 0;
             const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
             const oppositeFace = card.faces[oppositeFaceIndex];
 
             if (oppositeFace?.imageUrl) {
-              // Double-faced card - use the opposite face
               src = getLocalBleedImageUrl(preferPng(oppositeFace.imageUrl));
               isBackFace = true;
             } else {
@@ -990,8 +1000,12 @@ export async function exportProxyPagesToPdf({
 
         let uploadedUrlToRevoke: string | null = null;
 
-        if (!isBackSide && isUploadedFileToken(src)) {
-          const file = uploadedFiles?.[card.uuid];
+        if (isUploadedFileToken(src)) {
+          // Check if this is a back side uploaded file or front side
+          const file = isCurrentPageBack && isBackFace
+            ? uploadedBackFiles?.[card.uuid]
+            : uploadedFiles?.[card.uuid];
+
           if (!file) {
             console.warn(`Skipping card ${card.name} — missing uploaded file data.`);
             processedCards += 1;

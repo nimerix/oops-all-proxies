@@ -26,7 +26,9 @@ export function usePageViewState() {
       selectedImages: state.selectedImages,
       selectedBackFaceImages: state.selectedBackFaceImages,
       originalSelectedImages: state.originalSelectedImages,
+      originalSelectedBackImages: state.originalSelectedBackImages,
       uploadedFiles: state.uploadedFiles,
+      uploadedBackFiles: state.uploadedBackFiles,
     }))
   );
 

@@ -51,7 +51,7 @@ export function PageView() {
     customCardbackHasBleed,
     disableBackPageGuides
   } = settings;
-  const { cards, selectedImages, selectedBackFaceImages, originalSelectedImages, uploadedFiles } = cardsState;
+  const { cards, selectedImages, selectedBackFaceImages, originalSelectedImages, originalSelectedBackImages, uploadedFiles, uploadedBackFiles } = cardsState;
   const {
     setCards,
     setSelectedImages,
@@ -367,10 +367,14 @@ export function PageView() {
                     // Determine which image to show based on view mode
                     let img: string | undefined = selectedImages[card.uuid];
                     const hasBackFace = card.faces && card.faces.length > 1 && card.faces[1]?.imageUrl;
+                    const hasUploadedBackImage = card.hasBackImage && originalSelectedBackImages[card.uuid];
 
                     if (viewMode === "back") {
                       if (hasBackFace) {
-                        // Use the processed back face image
+                        // Use the processed back face image for double-faced cards
+                        img = selectedBackFaceImages[card.uuid];
+                      } else if (hasUploadedBackImage) {
+                        // Use the user-uploaded back image
                         img = selectedBackFaceImages[card.uuid];
                       } else {
                         // Single-faced card in back view - don't show front image, let SortableCard show cardback
@@ -424,8 +428,8 @@ export function PageView() {
                         key={globalIndex}
                         card={card}
                         state={loadingMap[card.uuid] ?? "idle"}
-                        hasImage={!!img || (viewMode === "back" && !hasBackFace)}
-                        ensureProcessed={viewMode === "back" && hasBackFace ? ensureBackFaceProcessed : ensureProcessed}
+                        hasImage={!!img || (viewMode === "back" && !hasBackFace && !hasUploadedBackImage)}
+                        ensureProcessed={viewMode === "back" && (hasBackFace || hasUploadedBackImage) ? ensureBackFaceProcessed : ensureProcessed}
                       >
                         <SortableCard
                           key={globalIndex}

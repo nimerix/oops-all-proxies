@@ -1,9 +1,16 @@
-import { useMemo, memo, useCallback } from "react";
+import { useMemo, memo, useCallback, useRef } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useArtworkModalStore, useSettingsStore } from "../store";
 import { useCardsStore } from "../store/cards";
 import type { CardOption } from "../types/Card";
+import {
+  addBleedEdgeSmartly,
+  computeCardPreviewPixels,
+  createPreviewDataUrl,
+  makeUploadedFileToken,
+  revokeIfBlobUrl,
+} from "../helpers/ImageHelper";
 
 type SortableCardProps = {
   card: CardOption;
@@ -58,6 +65,51 @@ const SortableCard = memo(function SortableCard({
   const appendOriginalSelectedImages = useCardsStore((state) => state.appendOriginalSelectedImages);
   const clearSelectedImage = useCardsStore((state) => state.clearSelectedImage);
   const clearSelectedBackFaceImage = useCardsStore((state) => state.clearSelectedBackFaceImage);
+  const appendUploadedBackFiles = useCardsStore((state) => state.appendUploadedBackFiles);
+  const appendOriginalSelectedBackImages = useCardsStore((state) => state.appendOriginalSelectedBackImages);
+  const appendSelectedBackFaceImages = useCardsStore((state) => state.appendSelectedBackFaceImages);
+
+  const backImageInputRef = useRef<HTMLInputElement>(null);
+
+  const handleBackImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const tempUrl = URL.createObjectURL(file);
+    let processedUrl: string | null = null;
+    try {
+      processedUrl = await addBleedEdgeSmartly(tempUrl, bleedEdgeWidth, {
+        unit: "mm",
+        bleedEdgeWidth,
+        hasBakedBleed: card.hasBakedBleed ?? false,
+      });
+
+      const { width, height } = computeCardPreviewPixels(bleedEdgeWidth, 300);
+      const preview = await createPreviewDataUrl(processedUrl, {
+        maxWidth: width,
+        maxHeight: height,
+        mimeType: "image/jpeg",
+        quality: 0.82,
+        background: "#FFFFFF",
+      });
+
+      appendUploadedBackFiles({ [card.uuid]: file });
+      appendOriginalSelectedBackImages({ [card.uuid]: makeUploadedFileToken(card.uuid) });
+      appendSelectedBackFaceImages({ [card.uuid]: preview });
+      updateCard(globalIndex, { hasBackImage: true });
+    } catch (err) {
+      console.error("[BackImageUpload] Failed to process back image:", err);
+    } finally {
+      URL.revokeObjectURL(tempUrl);
+      revokeIfBlobUrl(processedUrl);
+      if (e.target) e.target.value = "";
+    }
+  }, [card.uuid, card.hasBakedBleed, bleedEdgeWidth, globalIndex, appendUploadedBackFiles, appendOriginalSelectedBackImages, appendSelectedBackFaceImages, updateCard]);
+
+  const handleBackImageClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    backImageInputRef.current?.click();
+  }, []);
 
   // Check if card has multiple faces (is reversible)
   const isReversible = card.faces && card.faces.length > 1;
@@ -222,6 +274,26 @@ const SortableCard = memo(function SortableCard({
         >
           ⇄
         </div>
+      )}
+
+      {/* Upload Back Image button for user uploads */}
+      {card.isUserUpload && (
+        <>
+          <div
+            onClick={handleBackImageClick}
+            className="absolute left-1 bottom-1 w-6 h-6 bg-purple-600 text-white text-xs rounded-sm flex items-center justify-center cursor-pointer group-hover:opacity-100 opacity-75 hover:bg-purple-700 transition-colors"
+            title={card.hasBackImage ? "Change back side image" : "Add back side image"}
+          >
+            {card.hasBackImage ? "✓" : "+"}
+          </div>
+          <input
+            ref={backImageInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleBackImageUpload}
+            className="hidden"
+          />
+        </>
       )}
 
       {shouldShowGuides && roundedCornerGuides && cornerStyles.validCornerPosition && (
