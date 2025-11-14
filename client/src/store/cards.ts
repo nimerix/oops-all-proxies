@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { isUploadedFileToken, makeUploadedFileToken } from "../helpers/ImageHelper";
+import { indexedDBStorage, migrateFromLocalStorage } from "../helpers/IndexedDBStorage";
 import type { CardOption } from "../types/Card";
 
 type Store = {
@@ -400,8 +401,8 @@ export const useCardsStore = create<Store>()(
         }),
     }),
     {
-      name: "proxxied:cards:v6",
-      version: 6,
+      name: "proxxied:cards:v7",
+      version: 7,
 
       partialize: (state) => {
         const persistedState: Partial<Store> = {
@@ -423,7 +424,7 @@ export const useCardsStore = create<Store>()(
         return persistedState;
       },
 
-      storage: createJSONStorage(() => localStorage),
+      storage: createJSONStorage(() => indexedDBStorage),
 
       migrate: (persistedState: any, prevVersion) => {
         if (!persistedState) {
@@ -440,22 +441,39 @@ export const useCardsStore = create<Store>()(
             originalSelectedImages: persistedState.originalSelectedImages || {},
           };
         }
+        if (prevVersion < 7) {
+          // Version 7: Migrated to IndexedDB, no structural changes
+          return persistedState;
+        }
         return persistedState;
       },
 
-      // After rehydrate, remove all legacy keys
-      onRehydrateStorage: () => (_state, error) => {
-        if (error) return;
+      // After rehydrate, migrate from localStorage and cleanup
+      onRehydrateStorage: () => async (_state, error) => {
+        if (error) {
+          console.error("[Store] Rehydration error:", error);
+          return;
+        }
+
+        // Migrate from localStorage to IndexedDB
         try {
+          await migrateFromLocalStorage("proxxied:cards:v6");
+
+          // Clean up old localStorage keys
           const toRemove: string[] = [];
           for (let i = 0; i < localStorage.length; i++) {
             const k = localStorage.key(i);
-            if (k && k.startsWith("proxxied:") && !k.startsWith("proxxied:cards:v6")) {
+            if (k && k.startsWith("proxxied:")) {
               toRemove.push(k);
             }
           }
-          toRemove.forEach(k => localStorage.removeItem(k));
-        } catch { }
+          toRemove.forEach(k => {
+            console.log("[Store] Removing legacy localStorage key:", k);
+            localStorage.removeItem(k);
+          });
+        } catch (err) {
+          console.error("[Store] Migration error:", err);
+        }
       }
     }
   )
