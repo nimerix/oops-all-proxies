@@ -23,7 +23,7 @@ interface ScryfallSet {
 export function ArtworkModal() {
   const [isGettingMore, setIsGettingMore] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<CardOption[]>([]);
+  const [autocompleteSuggestions, setAutocompleteSuggestions] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [applyToAll, setApplyToAll] = useState(false);
@@ -173,12 +173,12 @@ export function ArtworkModal() {
       setSetFilter("");
       setAvailableSets([]);
       setSearchQuery("");
-      setSearchResults([]);
+      setAutocompleteSuggestions([]);
       setShowDropdown(false);
     }
   }, [isModalOpen, autoFetchPrints]);
 
-  // Debounced search for card replacement
+  // Debounced autocomplete for card replacement
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
@@ -186,8 +186,8 @@ export function ArtworkModal() {
 
     const query = searchQuery.trim();
 
-    if (query.length < 3) {
-      setSearchResults([]);
+    if (query.length < 2) {
+      setAutocompleteSuggestions([]);
       setShowDropdown(false);
       return;
     }
@@ -195,26 +195,26 @@ export function ArtworkModal() {
     setIsSearching(true);
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const res = await axios.post<CardOption[]>(
-          `${API_BASE}/api/cards/images`,
-          { cardNames: [query] }
+        // Use Scryfall's autocomplete API
+        const res = await axios.get(
+          `https://api.scryfall.com/cards/autocomplete?q=${encodeURIComponent(query)}`
         );
 
-        if (res.data && res.data.length > 0) {
-          setSearchResults(res.data.slice(0, 10));
+        if (res.data && res.data.data && res.data.data.length > 0) {
+          setAutocompleteSuggestions(res.data.data.slice(0, 10));
           setShowDropdown(true);
         } else {
-          setSearchResults([]);
+          setAutocompleteSuggestions([]);
           setShowDropdown(false);
         }
       } catch (error) {
-        console.error("Search failed:", error);
-        setSearchResults([]);
+        console.error("Autocomplete failed:", error);
+        setAutocompleteSuggestions([]);
         setShowDropdown(false);
       } finally {
         setIsSearching(false);
       }
-    }, 300);
+    }, 200);
 
     return () => {
       if (searchTimeoutRef.current) {
@@ -237,60 +237,79 @@ export function ArtworkModal() {
     }
   }, [showDropdown]);
 
-  // Helper function to replace the current card with a new one
-  async function replaceCardWith(newCard: CardOption) {
+  // Helper function to fetch and replace card by name
+  async function fetchAndReplaceCard(cardName: string) {
     if (modalIndex === null) return;
 
-    // Extract imageUrls from either the direct property or from faces
-    let urls = newCard.imageUrls ?? [];
-    if (urls.length === 0 && newCard.faces && newCard.faces.length > 0) {
-      urls = newCard.faces.map(face => face.imageUrl).filter(Boolean);
+    try {
+      setIsSearching(true);
+      const res = await axios.post<CardOption[]>(
+        `${API_BASE}/api/cards/images`,
+        { cardNames: [cardName] }
+      );
+
+      if (!res.data || res.data.length === 0) {
+        console.warn("No card found for:", cardName);
+        return;
+      }
+
+      const newCard = res.data[0];
+
+      // Extract imageUrls from either the direct property or from faces
+      let urls = newCard.imageUrls ?? [];
+      if (urls.length === 0 && newCard.faces && newCard.faces.length > 0) {
+        urls = newCard.faces.map(face => face.imageUrl).filter(Boolean);
+      }
+
+      if (!urls.length) return;
+
+      const newUuid = crypto.randomUUID();
+      const firstImageUrl = urls[0];
+
+      updateCard(modalIndex, {
+        uuid: newUuid,
+        name: newCard.name,
+        imageUrls: urls,
+        isUserUpload: false,
+        faces: newCard.faces,
+        layout: newCard.layout,
+        set: newCard.set,
+        number: newCard.number,
+        currentFaceIndex: 0,
+      });
+
+      updateArtworkCard({
+        uuid: newUuid,
+        name: newCard.name,
+        imageUrls: urls,
+        isUserUpload: false,
+        faces: newCard.faces,
+        layout: newCard.layout,
+        set: newCard.set,
+        number: newCard.number,
+      });
+
+      appendOriginalSelectedImages({
+        [newUuid]: firstImageUrl,
+      });
+
+      appendCachedImageUrls({
+        [newUuid]: getLocalBleedImageUrl(firstImageUrl),
+      });
+
+      clearSelectedImage(newUuid);
+
+      setSearchQuery("");
+      setAutocompleteSuggestions([]);
+      setShowDropdown(false);
+
+      // Fetch all prints for the new card
+      getMoreCards();
+    } catch (error) {
+      console.error("Failed to fetch card:", error);
+    } finally {
+      setIsSearching(false);
     }
-
-    if (!urls.length) return;
-
-    const newUuid = crypto.randomUUID();
-    const firstImageUrl = urls[0];
-
-    updateCard(modalIndex, {
-      uuid: newUuid,
-      name: newCard.name,
-      imageUrls: urls,
-      isUserUpload: false,
-      faces: newCard.faces,
-      layout: newCard.layout,
-      set: newCard.set,
-      number: newCard.number,
-      currentFaceIndex: 0,
-    });
-
-    updateArtworkCard({
-      uuid: newUuid,
-      name: newCard.name,
-      imageUrls: urls,
-      isUserUpload: false,
-      faces: newCard.faces,
-      layout: newCard.layout,
-      set: newCard.set,
-      number: newCard.number,
-    });
-
-    appendOriginalSelectedImages({
-      [newUuid]: firstImageUrl,
-    });
-
-    appendCachedImageUrls({
-      [newUuid]: getLocalBleedImageUrl(firstImageUrl),
-    });
-
-    clearSelectedImage(newUuid);
-
-    setSearchQuery("");
-    setSearchResults([]);
-    setShowDropdown(false);
-
-    // Fetch all prints for the new card
-    getMoreCards();
   }
 
   // Filter autocomplete suggestions based on input
@@ -349,8 +368,8 @@ export function ArtworkModal() {
               e.preventDefault();
               e.stopPropagation();
 
-              if (searchResults.length > 0) {
-                replaceCardWith(searchResults[0]);
+              if (autocompleteSuggestions.length > 0) {
+                fetchAndReplaceCard(autocompleteSuggestions[0]);
               }
             }}
           />
@@ -362,32 +381,16 @@ export function ArtworkModal() {
               </svg>
             </div>
           )}
-          {showDropdown && searchResults.length > 0 && (
+          {showDropdown && autocompleteSuggestions.length > 0 && (
             <div className="absolute z-50 w-full mt-1 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md shadow-lg max-h-80 overflow-y-auto">
-              {searchResults.map((card, idx) => (
+              {autocompleteSuggestions.map((cardName, idx) => (
                 <div
                   key={idx}
-                  className="px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-600 cursor-pointer border-b border-gray-200 dark:border-gray-600 last:border-b-0 flex items-center gap-3"
-                  onClick={() => replaceCardWith(card)}
+                  className="px-4 py-3 hover:bg-gray-100 dark:hover:bg-gray-600 cursor-pointer border-b border-gray-200 dark:border-gray-600 last:border-b-0"
+                  onClick={() => fetchAndReplaceCard(cardName)}
                 >
-                  <div className="flex-shrink-0 w-12 h-16">
-                    <img
-                      src={pngToNormal(card.imageUrls?.[0] || (card.faces?.[0]?.imageUrl || ""))}
-                      alt={card.name}
-                      className="w-full h-full object-cover rounded"
-                      onError={(e) => {
-                        const target = e.currentTarget as HTMLImageElement;
-                        target.src = card.imageUrls?.[0] || (card.faces?.[0]?.imageUrl || "");
-                      }}
-                    />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-gray-900 dark:text-white truncate">
-                      {card.name}
-                    </div>
-                    <div className="text-sm text-gray-600 dark:text-gray-400">
-                      {card.set && card.number ? `${card.set.toUpperCase()} #${card.number}` : ""}
-                    </div>
+                  <div className="font-medium text-gray-900 dark:text-white">
+                    {cardName}
                   </div>
                 </div>
               ))}
