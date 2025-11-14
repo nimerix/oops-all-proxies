@@ -88,16 +88,34 @@ export async function ExportImagesZip(opts: ExportOpts) {
     const facesToExport: Array<{ url: string; faceName?: string; faceIndex?: number }> = [];
 
     if (includeDoubleFaces && c.faces && c.faces.length > 1) {
-      // Export all faces
-      c.faces.forEach((face, faceIdx) => {
-        if (face.imageUrl) {
+      // Export all faces for double-faced cards
+      c.faces.forEach((face, loopIdx) => {
+        // First try face.imageUrl (most reliable for multi-face cards)
+        // Then try imageUrls array using face.faceIndex or loop index
+        const faceUrl =
+          face.imageUrl ||
+          c.imageUrls?.[face.faceIndex ?? loopIdx];
+
+        if (faceUrl) {
           facesToExport.push({
-            url: face.imageUrl,
+            url: faceUrl,
             faceName: face.name,
-            faceIndex: faceIdx,
+            faceIndex: face.faceIndex ?? loopIdx,
           });
+        } else {
+          console.warn(`[Export] No URL found for face "${face.name}" of card "${c.name}"`);
         }
       });
+
+      // If no faces were found, fall back to single-face logic
+      if (facesToExport.length === 0 && c.imageUrls && c.imageUrls.length > 0) {
+        console.warn(`[Export] Double-faced card "${c.name}" has no face URLs, falling back to imageUrls array`);
+        c.imageUrls.forEach((url, idx) => {
+          if (url) {
+            facesToExport.push({ url, faceIndex: idx });
+          }
+        });
+      }
     } else {
       // Export only current/selected face
       const rawSource =
@@ -135,7 +153,8 @@ export async function ExportImagesZip(opts: ExportOpts) {
           return;
         }
 
-        if (!c.isUserUpload && !(cachedImageUrls && cachedImageUrls[c.uuid])) {
+        // Always use server proxy for non-user-upload cards (avoids CORS issues)
+        if (!c.isUserUpload) {
           url = getLocalBleedImageUrl(preferPng(url));
         }
         source = { kind: "url", url };
