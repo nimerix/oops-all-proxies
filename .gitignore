@@ -3,3 +3,4 @@ server/src/uploaded-images/*
 server/dist/*
 
 node_modules/
+*.local

@@ -1,9 +1,21 @@
 import cors from "cors";
 import express from "express";
 import { imageRouter } from "./routes/imageRouter.js";
+import pino from "pino-http";
+
+
+const pino_options = process.env.LOG_PRETTY ? {
+  transport: {
+    target: "pino-pretty",
+    options: {
+      colorize: true,
+      translateTime: "SYS:standard",
+      ignore: "pid,hostname",
+    }
+  }}: {  };
 
 const app = express();
-
+app.use(pino(pino_options));
 app.use(cors({
   origin: (_, cb) => cb(null, true),
   methods: ["GET","POST","DELETE","OPTIONS"],

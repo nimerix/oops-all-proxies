@@ -5,6 +5,7 @@ const fsPromises = require("fs").promises;
 const axios = require("axios");
 const multer = require("multer");
 const crypto = require("crypto");
+const logger = require("../utils/logger.js");
 
 const {
   getScryfallPngImagesForCard,
@@ -33,7 +34,7 @@ async function getWithRetry(url, opts = {}, tries = 5) {
       if (res.status === 429) {
         const retryAfter = Number(res.headers["retry-after"] || 0);
         const wait = retryAfter > 0 ? retryAfter : Math.min(60, Math.pow(2, i));
-        console.log(`[429] Rate limited, waiting ${wait}s before retry ${i + 1}/${tries}`);
+        logger.warn(`[429] Rate limited on ${url}, waiting ${wait}s before retry ${i + 1}/${tries}`);
         await new Promise(r => setTimeout(r, wait * 1000));
         continue;
       }
@@ -173,16 +174,16 @@ imageRouter.post("/", async (req, res) => {
             // For prints, fetch all printings directly
             const { fetchCardsByQuery } = require("../utils/getCardImagesPaged");
             const q = `!"${ci.name}" include:extras unique:prints lang:${(ci.language || "en").toLowerCase()}`;
-            console.log(`[Prints] Querying: ${q}`);
+            logger.debug(`[Prints] Querying: ${q}`);
             let cards = await fetchCardsByQuery(q);
 
             if (!cards.length && fallbackToEnglish && ci.language !== "en") {
               const qEn = `!"${ci.name}" include:extras unique:prints lang:en`;
-              console.log(`[Prints] Fallback query: ${qEn}`);
+              logger.debug(`[Prints] Fallback query: ${qEn}`);
               cards = await fetchCardsByQuery(qEn);
             }
 
-            console.log(`[Prints] Found ${cards.length} printings for "${ci.name}"`);
+            logger.info(`[Prints] Found ${cards.length} printings for "${ci.name}"`);
 
             return cards.map(cardData => {
               // Ensure imageUrls is populated from faces if needed
@@ -207,7 +208,7 @@ imageRouter.post("/", async (req, res) => {
           allResults.push(...result);
         } catch (err) {
           // On timeout/error, return empty object
-          console.error(`[Prints] Error fetching prints for "${ci.name}":`, err?.message);
+          logger.error(`[Prints] Error fetching prints for "${ci.name}":`, err?.message);
           allResults.push({
             name: ci.name,
             set: ci.set,
@@ -220,7 +221,7 @@ imageRouter.post("/", async (req, res) => {
         }
       }
 
-      console.log(`[Prints] Returning ${allResults.length} total results`);
+      logger.info(`[Prints] Returning ${allResults.length} total results`);
       return res.json(allResults);
     }
 
@@ -265,7 +266,7 @@ imageRouter.post("/", async (req, res) => {
     console.error("Fetch error:", err?.message);
     return res.status(500).json({ error: "Failed to fetch images from Scryfall." });
   } finally {
-    console.log(`[POST /images] ${infos.length} cards in ${Date.now() - started}ms`);
+    logger.info(`[POST /images] ${infos.length} cards in ${Date.now() - started}ms`);
   }
 });
 
@@ -386,7 +387,7 @@ imageRouter.delete("/", async (req, res) => {
     res.json({ message: "Cached images clearing started.", count: files.length });
 
     if (!files.length) {
-      console.log(`[DELETE /images] no files (0ms)`);
+      logger.info(`[DELETE /images] no files (0ms)`);
       return;
     }
 
@@ -397,14 +398,14 @@ imageRouter.delete("/", async (req, res) => {
         try {
           await fsPromises.unlink(filePath);
         } catch (unlinkErr) {
-          console.warn(`Failed to delete ${filePath}:`, unlinkErr.message);
+          logger.warn(`Failed to delete ${filePath}:`, unlinkErr.message);
         }
       })
     );
 
-    console.log(`[DELETE /images] removed ${files.length} in ${Date.now() - started}ms`);
+    logger.info(`[DELETE /images] removed ${files.length} in ${Date.now() - started}ms`);
   } catch (err) {
-    console.error("Error reading cache directory:", err.message);
+    logger.error("Error reading cache directory:", err.message);
     if (!res.headersSent) {
       return res.status(500).json({ error: "Failed to read cache directory" });
     }

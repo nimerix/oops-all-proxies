@@ -1,6 +1,9 @@
 const axios = require("axios");
 
-const SCRYFALL_API = "https://api.scryfall.com/cards/search";
+const SCRYFALL_HOST = process.env.SCRYFALL_HOST || "https://api.scryfall.com";
+const SCRYFALL_API = `${SCRYFALL_HOST}/cards/search`;
+
+const RATE_LIMITING_ENABLED = process.env.ENABLE_SCRYFALL_RATE_LIMITING === "true";
 
 // Optional: a polite UA helps if you get rate-limited
 const AX = axios.create({
@@ -123,7 +126,10 @@ async function fetchCardsByQuery(query) {
 
   try {
     while (next) {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      console.log(`[Scryfall] Fetching: ${next}`);
+      if (RATE_LIMITING_ENABLED) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
       const resp = await getWithRetry(next);
       const { data, has_more, next_page } = resp.data;
 

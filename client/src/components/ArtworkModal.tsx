@@ -15,6 +15,8 @@ import { useArtworkModalStore } from "../store";
 import { useCardsStore } from "../store/cards";
 import type { CardOption } from "../types/Card";
 
+const SCRYFALL_HOST = import.meta.env.VITE_SCRYFALL_HOST || "https://api.scryfall.com";
+
 interface ScryfallSet {
   code: string;
   name: string;
@@ -65,7 +67,7 @@ export function ArtworkModal() {
 
     try {
       // Fetch all sets from Scryfall
-      const response = await axios.get("https://api.scryfall.com/sets");
+      const response = await axios.get(`${SCRYFALL_HOST}/sets`);
       const allSets = response.data.data;
 
       // Build a map of set codes to set names
@@ -197,7 +199,7 @@ export function ArtworkModal() {
       try {
         // Use Scryfall's autocomplete API
         const res = await axios.get(
-          `https://api.scryfall.com/cards/autocomplete?q=${encodeURIComponent(query)}`
+          `${SCRYFALL_HOST}/cards/autocomplete?q=${encodeURIComponent(query)}`
         );
 
         if (res.data && res.data.data && res.data.data.length > 0) {
