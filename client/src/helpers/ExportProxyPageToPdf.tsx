@@ -850,8 +850,16 @@ export async function exportProxyPagesToPdf({
       pages.push([...pageCards]);
       pageTypes.push("front");
 
-      // Back page (reversed order for proper duplex printing alignment)
-      const backPageCards = [...pageCards].reverse();
+      // Back page (reverse column order only for proper duplex printing alignment)
+      // We need to reverse cards within each row, not the entire array
+      const backPageCards: CardOption[] = [];
+      for (let row = 0; row < rows; row++) {
+        const rowStart = row * columns;
+        const rowEnd = Math.min(rowStart + columns, pageCards.length);
+        const rowCards = pageCards.slice(rowStart, rowEnd);
+        // Reverse the cards in this row (reverse column order)
+        backPageCards.push(...rowCards.reverse());
+      }
       pages.push(backPageCards);
       pageTypes.push("back");
     }
