@@ -1,4 +1,4 @@
-import React, { useEffect, memo } from "react";
+import React, { useEffect, memo, useRef } from "react";
 import { useOnScreen } from "../hooks/useOnScreen";
 import type { CardOption } from "../types/Card";
 
@@ -18,32 +18,38 @@ const CardCellLazy = memo(function CardCellLazy({
   children,
 }: Props) {
   const { ref, visible } = useOnScreen<HTMLDivElement>("400px");
+  const attemptedRef = useRef(false);
 
   useEffect(() => {
-    if (visible) void ensureProcessed(card);
-  }, [visible, card, ensureProcessed]);
+    // Only attempt to process once - don't retry automatically when in error state
+    if (visible && !hasImage && state !== "error" && !attemptedRef.current) {
+      attemptedRef.current = true;
+      void ensureProcessed(card);
+    }
+  }, [visible, card, ensureProcessed, hasImage, state]);
 
   return (
     <div ref={ref} className="relative">
       {!hasImage && state !== "error" && (
-        <div className="absolute inset-0 grid place-items-center z-10">
+        <div className="absolute inset-0 grid place-items-center z-10 pointer-events-none">
           <div className="h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-transparent" />
         </div>
       )}
       {state === "error" && !hasImage && (
-        <div className="absolute inset-0 grid place-items-center z-10">
-          <div className="px-2 py-1 text-xs bg-red-600 text-white rounded">
+        <div className="absolute inset-0 grid place-items-center z-10 pointer-events-none">
+          <div
+            className="px-2 py-1 text-xs bg-red-600 text-white rounded cursor-pointer pointer-events-auto"
+            onClick={(e) => {
+              e.stopPropagation();
+              attemptedRef.current = false;
+              void ensureProcessed(card);
+            }}
+          >
             load failed — click to retry
           </div>
         </div>
       )}
-      <div
-        onClick={() => {
-          if (state === "error") void ensureProcessed(card);
-        }}
-      >
-        {children}
-      </div>
+      {children}
     </div>
   );
 });
