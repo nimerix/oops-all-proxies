@@ -1,4 +1,5 @@
 const axios = require("axios");
+const logger = require("../utils/logger.js");
 
 const SCRYFALL_HOST = process.env.SCRYFALL_HOST || "https://api.scryfall.com";
 const SCRYFALL_API = `${SCRYFALL_HOST}/cards/search`;
@@ -72,17 +73,17 @@ async function getImagesForCardInfo(
 ) {
   const { name, set, number } = cardInfo || {};
   const lang = (language || "en").toLowerCase();
-
+  const baseQuery = `include:extras game:paper is:hires`;
   // 1) Exact printing: set + collector number + name (language filter still applied)
   if (set && number) {
     const q = `set:${set} number:${escapeColon(
       number
-    )} name:"${name}" include:extras unique:prints lang:${lang}`;
+    )} name:"${name}" ${baseQuery} unique:prints lang:${lang}`;
     let cards = await fetchCardsByQuery(q);
     if (!cards.length && fallbackToEnglish && lang !== "en") {
       const qEn = `set:${set} number:${escapeColon(
         number
-      )} name:"${name}" include:extras unique:prints lang:en`;
+      )} name:"${name}" ${baseQuery} unique:prints lang:en`;
       cards = await fetchCardsByQuery(qEn);
     }
     if (cards.length) return cards[0]; // Return first match
@@ -91,10 +92,10 @@ async function getImagesForCardInfo(
 
   // 2) Set + name (without collector number - used as fallback from step 1 or when no number provided)
   if (set) {
-    const q = `set:${set} name:"${name}" include:extras unique:${unique} lang:${lang}`;
+    const q = `set:${set} name:"${name}" ${baseQuery} unique:${unique} lang:${lang}`;
     let cards = await fetchCardsByQuery(q);
     if (!cards.length && fallbackToEnglish && lang !== "en") {
-      const qEn = `set:${set} name:"${name}" include:extras unique:${unique} lang:en`;
+      const qEn = `set:${set} name:"${name}" ${baseQuery} unique:${unique} lang:en`;
       cards = await fetchCardsByQuery(qEn);
     }
     if (cards.length) return cards[0]; // Return first match
@@ -102,10 +103,10 @@ async function getImagesForCardInfo(
   }
 
   // 3) Name-only exact match (prefer language)
-  const q = `!"${name}" include:extras unique:${unique} lang:${lang}`;
+  const q = `!"${name}" ${baseQuery} unique:${unique} lang:${lang}`;
   let cards = await fetchCardsByQuery(q);
   if (!cards.length && fallbackToEnglish && lang !== "en") {
-    const qEn = `!"${name}" include:extras unique:${unique} lang:en`;
+    const qEn = `!"${name}" ${baseQuery} unique:${unique} lang:en`;
     cards = await fetchCardsByQuery(qEn);
   }
   return cards.length ? cards[0] : { imageUrls: [], faces: null, layout: null };
@@ -134,6 +135,10 @@ async function fetchCardsByQuery(query) {
       const { data, has_more, next_page } = resp.data;
 
       for (const card of data || []) {
+        if (card?.digital === true) {
+          // Skip digital-only cards
+          continue;
+        }
         const cardData = {
           layout: card.layout,
           set: card.set,

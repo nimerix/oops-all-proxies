@@ -19,6 +19,15 @@ const CardCellLazy = memo(function CardCellLazy({
 }: Props) {
   const { ref, visible } = useOnScreen<HTMLDivElement>("400px");
   const attemptedRef = useRef(false);
+  const prevHasImageRef = useRef(hasImage);
+
+  // Reset attemptedRef when hasImage changes from true to false (image was cleared)
+  useEffect(() => {
+    if (prevHasImageRef.current && !hasImage) {
+      attemptedRef.current = false;
+    }
+    prevHasImageRef.current = hasImage;
+  }, [hasImage]);
 
   useEffect(() => {
     // Only attempt to process once - don't retry automatically when in error state
