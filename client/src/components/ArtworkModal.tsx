@@ -97,7 +97,6 @@ export function ArtworkModal() {
         { cardNames: [modalCard.name], cardArt: "prints" }
       );
 
-      console.log(`[ArtworkModal] Received ${res.data?.length ?? 0} results for "${modalCard.name}"`);
 
       if (!res.data || res.data.length === 0) {
         console.warn(`[ArtworkModal] No prints found for "${modalCard.name}"`);
@@ -114,11 +113,9 @@ export function ArtworkModal() {
         if (urls.length === 0 && cardData.faces && cardData.faces.length > 0) {
           urls = cardData.faces.map(face => face.imageUrl).filter(Boolean);
         }
-        console.log(`[ArtworkModal] Card ${cardData.set}-${cardData.number}: ${urls.length} images`);
         allUrls.push(...urls);
       }
 
-      console.log(`[ArtworkModal] Total combined URLs: ${allUrls.length}`);
 
       // Store all prints for later lookup
       setAllPrints(res.data);
