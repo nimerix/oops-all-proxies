@@ -15,8 +15,6 @@ import { useArtworkModalStore } from "../store";
 import { useCardsStore } from "../store/cards";
 import type { CardOption } from "../types/Card";
 
-const SCRYFALL_HOST = import.meta.env.VITE_SCRYFALL_HOST || "https://api.scryfall.com";
-
 interface ScryfallSet {
   code: string;
   name: string;
@@ -61,13 +59,13 @@ export function ArtworkModal() {
     (state) => state.appendCachedImageUrls
   );
 
-  // Fetch full set names from Scryfall API
+  // Fetch full set names from server
   async function fetchSetNames(setCodes: string[]): Promise<Map<string, string>> {
     const setMap = new Map<string, string>();
 
     try {
-      // Fetch all sets from Scryfall
-      const response = await axios.get(`${SCRYFALL_HOST}/sets`);
+      // Fetch all sets from server
+      const response = await axios.get(`${API_BASE}/api/cards/images/sets`);
       const allSets = response.data.data;
 
       // Build a map of set codes to set names
@@ -82,7 +80,7 @@ export function ArtworkModal() {
         }
       });
     } catch (error) {
-      console.warn("Failed to fetch set names from Scryfall:", error);
+      console.warn("Failed to fetch set names from server:", error);
       // Fallback: use codes as names
       setCodes.forEach(code => setMap.set(code, code));
     }
@@ -197,9 +195,9 @@ export function ArtworkModal() {
     setIsSearching(true);
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        // Use Scryfall's autocomplete API
+        // Use server's autocomplete endpoint
         const res = await axios.get(
-          `${SCRYFALL_HOST}/cards/autocomplete?q=${encodeURIComponent(query)}`
+          `${API_BASE}/api/cards/images/autocomplete?q=${encodeURIComponent(query)}`
         );
 
         if (res.data && res.data.data && res.data.data.length > 0) {

@@ -431,6 +431,62 @@ imageRouter.get("/diag", (req, res) => {
   });
 });
 
+// -------------------- Autocomplete --------------------
+
+imageRouter.get("/autocomplete", async (req, res) => {
+  const query = req.query.q;
+  if (!query || typeof query !== "string") {
+    return res.status(400).json({ error: "Missing or invalid ?q parameter" });
+  }
+
+  const trimmedQuery = query.trim();
+  if (trimmedQuery.length < 2) {
+    return res.json({ data: [] });
+  }
+
+  try {
+    const scryfallHost = process.env.SCRYFALL_HOST || "https://api.scryfall.com";
+    const response = await getWithRetry(
+      `${scryfallHost}/cards/autocomplete?q=${encodeURIComponent(trimmedQuery)}`,
+      { timeout: 5000 },
+      2
+    );
+
+    if (response.status >= 400 || !response.data) {
+      logger.warn(`[Autocomplete] Scryfall returned ${response.status}`);
+      return res.json({ data: [] });
+    }
+
+    return res.json(response.data);
+  } catch (err) {
+    logger.error("[Autocomplete] Error:", err.message);
+    return res.status(500).json({ error: "Failed to fetch autocomplete suggestions" });
+  }
+});
+
+// -------------------- Sets --------------------
+
+imageRouter.get("/sets", async (req, res) => {
+  try {
+    const scryfallHost = process.env.SCRYFALL_HOST || "https://api.scryfall.com";
+    const response = await getWithRetry(
+      `${scryfallHost}/sets`,
+      { timeout: 10000 },
+      2
+    );
+
+    if (response.status >= 400 || !response.data) {
+      logger.warn(`[Sets] Scryfall returned ${response.status}`);
+      return res.status(502).json({ error: "Failed to fetch sets from Scryfall" });
+    }
+
+    return res.json(response.data);
+  } catch (err) {
+    logger.error("[Sets] Error:", err.message);
+    return res.status(500).json({ error: "Failed to fetch sets" });
+  }
+});
+
 // -------------------- Google Drive helper --------------------
 
 imageRouter.get("/front", async (req, res) => {
