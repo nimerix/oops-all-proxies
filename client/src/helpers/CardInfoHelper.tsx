@@ -29,6 +29,13 @@ export function extractCardInfo(input: string): CardInfo {
     s = s.replace(setNumTail, "").trim();
   }
 
+  // Handle double-faced cards (e.g., "Sink into Stupor // Soporific Springs")
+  // Extract just the front face name for Scryfall queries
+  const doubleFaceSeparator = s.indexOf(" // ");
+  if (doubleFaceSeparator !== -1) {
+    s = s.substring(0, doubleFaceSeparator).trim();
+  }
+
   return { name: s, set: setCode, number };
 }
 

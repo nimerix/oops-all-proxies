@@ -236,7 +236,7 @@ export function ArtworkModal() {
 
   // Helper function to fetch and replace card by name
   async function fetchAndReplaceCard(cardName: string) {
-    if (modalIndex === null) return;
+    if (modalIndex === null || !modalCard) return;
 
     try {
       setIsSearching(true);
@@ -260,8 +260,13 @@ export function ArtworkModal() {
 
       if (!urls.length) return;
 
+      const oldUuid = modalCard.uuid;
       const newUuid = crypto.randomUUID();
       const firstImageUrl = urls[0];
+
+      // Clean up old card's data from all stores
+      const clearVolatileForCard = useCardsStore.getState().clearVolatileForCard;
+      clearVolatileForCard(oldUuid);
 
       updateCard(modalIndex, {
         uuid: newUuid,
@@ -491,6 +496,12 @@ export function ArtworkModal() {
                         }
                       }
 
+                      // For double-faced cards, always use the front face (index 0) as the primary image
+                      // The currentFaceIndex tracks which face was clicked
+                      const primaryImageUrl = matchingPrint?.faces && matchingPrint.faces.length > 0
+                        ? matchingPrint.faces[0].imageUrl
+                        : pngUrl;
+
                       // Apply to all if checkbox is checked OR Shift is held
                       if (applyToAll || e.shiftKey) {
                         const newOriginalSelectedImages: Record<
@@ -502,9 +513,9 @@ export function ArtworkModal() {
 
                         cards.forEach((card) => {
                           if (card.name === modalCard.name) {
-                            newOriginalSelectedImages[card.uuid] = pngUrl;
+                            newOriginalSelectedImages[card.uuid] = primaryImageUrl;
                             cachedUpdates[card.uuid] =
-                              getLocalBleedImageUrl(pngUrl);
+                              getLocalBleedImageUrl(primaryImageUrl);
                             uuidsToClear.push(card.uuid);
 
                             // Update card metadata to match the selected print
@@ -528,11 +539,11 @@ export function ArtworkModal() {
 
                       } else {
                         appendOriginalSelectedImages({
-                          [modalCard.uuid]: pngUrl,
+                          [modalCard.uuid]: primaryImageUrl,
                         });
 
                         appendCachedImageUrls({
-                          [modalCard.uuid]: getLocalBleedImageUrl(pngUrl),
+                          [modalCard.uuid]: getLocalBleedImageUrl(primaryImageUrl),
                         });
 
                         // Update the card's metadata to match the selected print

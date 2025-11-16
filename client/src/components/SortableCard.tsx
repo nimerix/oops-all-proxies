@@ -147,8 +147,8 @@ const SortableCard = memo(function SortableCard({
       return customCardbackUrl || "/cardback.png";
     }
 
-    // Front view - show normal image
-    return imageSrc;
+    // Front view - show normal image, or fallback to placeholder if empty
+    return imageSrc || "/cardback.png";
   }, [viewMode, imageSrc, customCardbackUrl]);
 
   const style = {

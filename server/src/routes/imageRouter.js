@@ -25,6 +25,9 @@ async function getWithRetry(url, opts = {}, tries = 5) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
+      if (process.env.LOG_ALL_REQUESTS === "true") {
+        logger.info(`[GET] ${url}`);
+      }
       const res = await AX.get(url, opts);
 
       // Success

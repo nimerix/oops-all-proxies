@@ -15,7 +15,7 @@ const pino_options = process.env.LOG_PRETTY ? {
   }}: {  };
 
 const app = express();
-app.use(pino(pino_options));
+// app.use(pino(pino_options));
 app.use(cors({
   origin: (_, cb) => cb(null, true),
   methods: ["GET","POST","DELETE","OPTIONS"],

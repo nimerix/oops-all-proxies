@@ -2,6 +2,7 @@ const axios = require("axios");
 const logger = require("../utils/logger.js");
 
 const SCRYFALL_HOST = process.env.SCRYFALL_HOST || "https://api.scryfall.com";
+// const SCRYFALL_HOST =  "https://api.scryfall.com";
 const SCRYFALL_API = `${SCRYFALL_HOST}/cards/search`;
 
 const RATE_LIMITING_ENABLED = process.env.ENABLE_SCRYFALL_RATE_LIMITING === "true";
@@ -14,6 +15,11 @@ const AX = axios.create({
 
 // Retry logic with exponential backoff for 429 / transient errors
 async function getWithRetry(url, tries = 5) {
+  // Log all requests if LOG_ALL_REQUESTS=true
+  if (process.env.LOG_ALL_REQUESTS === "true") {
+    logger.info(`[GET] ${url}`);
+  }
+
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
@@ -22,7 +28,7 @@ async function getWithRetry(url, tries = 5) {
         // Respect Retry-After header with longer fallback
         const retryAfter = Number(res.headers["retry-after"] || 0);
         const wait = retryAfter > 0 ? retryAfter : Math.min(60, Math.pow(2, i));
-        console.log(`[429] Rate limited on ${url}, waiting ${wait}s before retry ${i + 1}/${tries}`);
+        logger.info(`[429] Rate limited on ${url}, waiting ${wait}s before retry ${i + 1}/${tries}`);
         await new Promise(r => setTimeout(r, wait * 1000));
         continue;
       }
@@ -52,7 +58,7 @@ async function getWithRetry(url, tries = 5) {
       // Retry network errors and server errors (5xx) with exponential backoff
       if (i < tries - 1) {
         const backoff = 500 * Math.pow(2, i);
-        console.log(`[Retry] Attempt ${i + 1}/${tries} failed for ${url}, waiting ${backoff}ms`);
+        logger.info(`[Retry] Attempt ${i + 1}/${tries} failed for ${url}, waiting ${backoff}ms`);
         await new Promise(r => setTimeout(r, backoff));
       }
     }
@@ -73,7 +79,7 @@ async function getImagesForCardInfo(
 ) {
   const { name, set, number } = cardInfo || {};
   const lang = (language || "en").toLowerCase();
-  const baseQuery = `include:extras game:paper is:hires`;
+  const baseQuery = `include:extras game:paper`;
   // 1) Exact printing: set + collector number + name (language filter still applied)
   if (set && number) {
     const q = `set:${set} number:${escapeColon(
@@ -127,7 +133,7 @@ async function fetchCardsByQuery(query) {
 
   try {
     while (next) {
-      console.log(`[Scryfall] Fetching: ${next}`);
+      logger.info(`[Scryfall] Fetching: ${next}`);
       if (RATE_LIMITING_ENABLED) {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
@@ -147,23 +153,34 @@ async function fetchCardsByQuery(query) {
           faces: null
         };
 
-        if (card?.image_uris?.png) {
-          // Single-faced card
-          cardData.imageUrls.push(card.image_uris.png);
-          cardData.faces = [{
-            name: card.name,
-            imageUrl: card.image_uris.png,
-            faceIndex: 0
-          }];
-        } else if (Array.isArray(card?.card_faces)) {
-          // Multi-faced card (transform, modal_dfc, etc.)
-          cardData.faces = card.card_faces.map((face, idx) => ({
-            name: face.name,
-            imageUrl: face?.image_uris?.png,
-            faceIndex: idx
-          })).filter(f => f.imageUrl);
+        // Check for card_faces FIRST (multi-faced cards have both card_faces AND top-level image_uris)
+        if (Array.isArray(card?.card_faces) && card.card_faces.length > 0) {
+          // Multi-faced card (transform, modal_dfc, etc.) - prefer PNG, fallback to large JPG, then normal
+          cardData.faces = card.card_faces.map((face, idx) => {
+            const imageUrl = face?.image_uris?.png || face?.image_uris?.large || face?.image_uris?.normal;
+            return {
+              name: face.name,
+              imageUrl: imageUrl,
+              faceIndex: idx
+            };
+          }).filter(f => f.imageUrl);
 
           cardData.imageUrls = cardData.faces.map(f => f.imageUrl);
+
+          // Debug logging for double-faced cards
+          if (cardData.faces.length > 1) {
+            logger.info(`[DFC] ${card.name}: ${cardData.faces.length} faces`,
+              cardData.faces.map(f => `${f.name} (${f.imageUrl ? 'has image' : 'NO IMAGE'})`));
+          }
+        } else if (card?.image_uris?.png || card?.image_uris?.large || card?.image_uris?.normal) {
+          // Single-faced card - prefer PNG, fallback to large JPG, then normal JPG
+          const imageUrl = card.image_uris.png || card.image_uris.large || card.image_uris.normal;
+          cardData.imageUrls.push(imageUrl);
+          cardData.faces = [{
+            name: card.name,
+            imageUrl: imageUrl,
+            faceIndex: 0
+          }];
         }
 
         if (cardData.imageUrls.length > 0) {
@@ -174,7 +191,7 @@ async function fetchCardsByQuery(query) {
       next = has_more ? next_page : null;
     }
   } catch (err) {
-    console.warn("[Scryfall] Query failed:", query, err?.message);
+    logger.warn("[Scryfall] Query failed:", query, err?.message);
   }
 
   return cards;

@@ -155,6 +155,13 @@ export function useImageProcessing({
     const hasUploadedBackImage = originalSelectedBackImages[uuid];
     const hasDoubleFace = card.faces && card.faces.length >= 2;
 
+    console.log(`[ensureBackFaceProcessed] ${card.name}:`, {
+      hasUploadedBackImage: !!hasUploadedBackImage,
+      hasDoubleFace,
+      facesCount: card.faces?.length,
+      faces: card.faces?.map(f => ({ name: f.name, hasUrl: !!f.imageUrl }))
+    });
+
     if (!hasUploadedBackImage && !hasDoubleFace) return;
 
     const backFaceKey = `${uuid}-back`;
@@ -180,7 +187,15 @@ export function useImageProcessing({
           const oppositeFaceIndex = currentFaceIndex === 0 ? 1 : 0;
           const oppositeFace = card.faces![oppositeFaceIndex];
 
-          if (!oppositeFace?.imageUrl) return;
+          console.log(`[ensureBackFaceProcessed] Processing face ${oppositeFaceIndex}:`, {
+            name: oppositeFace?.name,
+            imageUrl: oppositeFace?.imageUrl
+          });
+
+          if (!oppositeFace?.imageUrl) {
+            console.warn(`[ensureBackFaceProcessed] No imageUrl for back face of ${card.name}`);
+            return;
+          }
 
           const backFaceUrl = getLocalBleedImageUrl(oppositeFace.imageUrl);
           resolvedSrc = await urlToDataUrl(backFaceUrl);

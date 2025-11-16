@@ -871,7 +871,17 @@ export async function exportProxyPagesToPdf({
       // For backside export, reverse the order of cards on each page
       // This is because the sheet will be printed on the reverse side
       if (isBackSide) {
-        pageCards.reverse();
+        // reverse only within each row for proper alignment
+        for (let row = 0; row < rows; row++) {
+          const rowStart = row * columns;
+          const rowEnd = Math.min(rowStart + columns, pageCards.length);
+          const rowCards = pageCards.slice(rowStart, rowEnd);
+          // Reverse the cards in this row (reverse column order)
+          for (let j = 0; j < rowCards.length; j++) {
+            pageCards[rowStart + columns - 1 - j] = rowCards[j];
+          }
+        }
+        // pageCards.reverse();
         pageTypes.push("back");
       } else {
         pageTypes.push("front");
