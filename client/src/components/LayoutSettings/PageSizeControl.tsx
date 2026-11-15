@@ -1,5 +1,5 @@
 import { useSettingsStore } from "@/store";
-import type { LayoutPreset } from "@/store/settings";
+import { layoutPresetsSizes, type LayoutPreset } from "@/store/settings";
 const presets: LayoutPreset[] = [
   "Letter",
   "A4",
@@ -23,23 +23,33 @@ export function PageSizeControl() {
           value={s.pageSizePreset}
           onChange={(e) => s.setPageSizePreset(e.target.value as LayoutPreset)}
         >
-          {presets.map((preset) => (
-            <option key={preset}>{preset}</option>
-          ))}
+          {presets.map((preset) => {
+            const {
+              pageWidth: w,
+              pageHeight: h,
+              pageSizeUnit: unit,
+            } = layoutPresetsSizes[preset];
+            return (
+              <option key={preset} value={preset}>
+                {`${preset}, ${w} × ${h} ${unit}`}
+              </option>
+            );
+          })}
         </select>
       </div>
-      <div className="orientation-row">
-        <span className="hint tabular-nums">
-          {s.pageWidth} × {s.pageHeight} {s.pageSizeUnit}
-        </span>
-        <button
-          type="button"
-          className="text-button"
-          onClick={s.swapPageOrientation}
-          aria-label={`Switch to ${s.pageOrientation === "portrait" ? "landscape" : "portrait"}`}
-        >
-          ↻ {s.pageOrientation === "portrait" ? "Portrait" : "Landscape"}
-        </button>
+      <div className="segmented" role="group" aria-label="Orientation">
+        {(["portrait", "landscape"] as const).map((orientation) => (
+          <button
+            key={orientation}
+            type="button"
+            aria-pressed={s.pageOrientation === orientation}
+            onClick={() => {
+              if (s.pageOrientation !== orientation) s.swapPageOrientation();
+            }}
+          >
+            {orientation === "portrait" ? "Portrait" : "Landscape"}
+          </button>
+        ))}
       </div>
     </>
   );

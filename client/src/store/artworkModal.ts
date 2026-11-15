@@ -1,10 +1,14 @@
 import { create } from "zustand";
+import type { ArtworkScope } from "../helpers/artworkScope";
 import type { CardOption } from "../types/Card";
+
+type OpenScope = Exclude<ArtworkScope, "name">;
 
 type ArtworkModalData = {
   card: CardOption | null;
   index: number | null;
   autoFetchPrints?: boolean;
+  scope?: OpenScope;
 };
 
 type Store = {
@@ -12,6 +16,7 @@ type Store = {
   card: CardOption | null;
   index: number | null;
   autoFetchPrints: boolean;
+  scope: OpenScope;
   openModal: (data: ArtworkModalData) => void;
   closeModal: () => void;
   updateCard: (updatedCard: Partial<CardOption>) => void;
@@ -22,8 +27,23 @@ export const useArtworkModalStore = create<Store>((set) => ({
   card: null,
   index: null,
   autoFetchPrints: false,
-  openModal: (data) => set({ open: true, card: data.card, index: data.index, autoFetchPrints: data.autoFetchPrints ?? false }),
-  closeModal: () => set({ open: false, card: null, index: null, autoFetchPrints: false }),
+  scope: "copy",
+  openModal: (data) =>
+    set({
+      open: true,
+      card: data.card,
+      index: data.index,
+      autoFetchPrints: data.autoFetchPrints ?? false,
+      scope: data.scope ?? "copy",
+    }),
+  closeModal: () =>
+    set({
+      open: false,
+      card: null,
+      index: null,
+      autoFetchPrints: false,
+      scope: "copy",
+    }),
   updateCard: (updatedCard) =>
     set((state) => {
       if (!state.card) return state;

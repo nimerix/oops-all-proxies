@@ -15,22 +15,40 @@ import {
 import {
   lazy,
   Suspense,
-  useEffect,
+  useCallback,
   useMemo,
-  useRef,
   useState,
   type CSSProperties,
 } from "react";
-import { LayoutGrid, Layers3, ZoomIn, ZoomOut, Scan } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import CardCellLazy from "./CardCellLazy";
 import EdgeCutLines from "./FullPageGuides";
-import SortableCard from "./SortableCard";
+import SortableCard, { type CardState } from "./SortableCard";
+import { MatToolbar } from "./mat/MatToolbar";
 import { useImageProcessing } from "../hooks/useImageProcessing";
-import { useCardsStore, useSettingsStore } from "../store";
+import {
+  scrollBehavior,
+  useCurrentSheet,
+  useFocusRequest,
+  useScrollerSize,
+  useSheetLabelHeight,
+} from "../hooks/useSheetView";
+import {
+  useCardsStore,
+  usePreviewStore,
+  useSettingsStore,
+  useUiStore,
+} from "../store";
+import { deckEdit } from "../store/undo";
 import { pageSlots, printLayout } from "../helpers/printLayout";
+import { cardSource } from "../helpers/cardSources";
+import { needsArtwork } from "../helpers/deckGroups";
+import { mmToPx, sheetScale } from "../helpers/sheetScale";
 const ArtworkModal = lazy(() =>
   import("./ArtworkModal").then((module) => ({ default: module.ArtworkModal }))
 );
+
+const COMPACT_CARD_PX = 96;
 
 export function PageView() {
   const s = useSettingsStore();
@@ -39,239 +57,225 @@ export function PageView() {
     () => new Map(cards.map((card, index) => [card.uuid, index])),
     [cards]
   );
-  const fronts = useCardsStore((state) => state.selectedImages);
-  const backs = useCardsStore((state) => state.selectedBackFaceImages);
-  const container = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(600);
-  useEffect(() => {
-    const el = container.current;
-    if (!el) return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.width > 0) setWidth(entry.contentRect.width);
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
+  const images = useCardsStore(
+    useShallow((state) => ({
+      selectedImages: state.selectedImages,
+      selectedBackFaceImages: state.selectedBackFaceImages,
+      originalSelectedImages: state.originalSelectedImages,
+      originalSelectedBackImages: state.originalSelectedBackImages,
+      uploadedFiles: state.uploadedFiles,
+      uploadedBackFiles: state.uploadedBackFiles,
+    }))
+  );
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
+  const size = useScrollerSize(scroller);
   const layout = printLayout(s);
-  const scale =
-    Math.min(
-      1,
-      Math.max(0.1, (width - 32) / ((layout.pageWidthMm * 96) / 25.4))
-    ) * s.zoom;
   const capacity = s.columns * s.rows;
   const pageCount = Math.ceil(cards.length / capacity);
-  const { loadingMap, errorMap, ensureProcessed, ensureBackFaceProcessed } =
-    useImageProcessing({ unit: "mm", bleedEdgeWidth: s.bleedEdgeWidth });
+  const labelHeight = useSheetLabelHeight(scroller, pageCount);
+  const scale = sheetScale({
+    mode: cards.length ? s.zoomMode : "page",
+    zoom: s.zoom,
+    containerWidth: size.width,
+    containerHeight: size.height,
+    pageWidthPx: mmToPx(layout.pageWidthMm),
+    pageHeightPx: mmToPx(layout.pageHeightMm),
+    labelHeight,
+  });
+  const back = s.viewMode === "back";
+  useCurrentSheet(scroller, pageCount);
+  const located = useFocusRequest(scroller, scale);
+  const previewStatus = usePreviewStore((state) => state.status);
+  const { ensureProcessed, ensureBackFaceProcessed } = useImageProcessing({
+    unit: "mm",
+    bleedEdgeWidth: s.bleedEdgeWidth,
+  });
+  const ensure = back ? ensureBackFaceProcessed : ensureProcessed;
+  const hasSource = (card: (typeof cards)[number]) =>
+    back
+      ? !!cardSource(
+          card,
+          images,
+          true,
+          s.customCardbackUrl,
+          s.customCardbackHasBleed
+        ).source
+      : !needsArtwork(card, images);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+  const showSheet = useCallback(
+    (index: number) => {
+      const frames = scroller?.querySelectorAll(".sheet-frame");
+      frames?.[index]?.scrollIntoView({
+        block: "start",
+        behavior: scrollBehavior(),
+      });
+    },
+    [scroller]
+  );
+  const pageStyle = {
+    zoom: scale,
+    width: `${layout.pageWidthMm}mm`,
+    height: `${layout.pageHeightMm}mm`,
+    "--control-zoom": 1 / scale,
+  } as CSSProperties;
+  const frameWidth = mmToPx(layout.pageWidthMm) * scale;
   return (
     <section
       id="preview-panel"
       className="preview-panel"
       aria-label="Print preview"
-      ref={container}
     >
-      <div className="preview-toolbar">
-        <div className="view-switch" aria-label="Preview side">
-          <button
-            aria-pressed={s.viewMode === "front"}
-            onClick={() => s.setViewMode("front")}
-          >
-            Fronts
-          </button>
-          <button
-            aria-pressed={s.viewMode === "back"}
-            onClick={() => s.setViewMode("back")}
-          >
-            Backs
-          </button>
-        </div>
-        <div className="zoom-controls">
-          <button
-            aria-label="Zoom out"
-            disabled={s.zoom <= 0.1}
-            onClick={() => s.setZoom(s.zoom - 0.1)}
-          >
-            <ZoomOut size={17} />
-          </button>
-          <span>{Math.round(s.zoom * 100)}%</span>
-          <button
-            aria-label="Zoom in"
-            disabled={s.zoom >= 3}
-            onClick={() => s.setZoom(s.zoom + 0.1)}
-          >
-            <ZoomIn size={17} />
-          </button>
-          <button
-            aria-label="Fit sheets to preview"
-            onClick={() => s.setZoom(1)}
-          >
-            <Scan size={17} />
-          </button>
-        </div>
-      </div>
-      {!cards.length ? (
-        <div className="empty-workspace">
-          <div className="sample-sheets" aria-hidden="true">
-            <div />
-            <div>
-              <LayoutGrid size={72} strokeWidth={1} />
+      {cards.length > 0 && (
+        <MatToolbar
+          scale={scale}
+          sheetCount={pageCount}
+          onShowSheet={showSheet}
+        />
+      )}
+      {cards.length > 0 && back && (
+        <p className="back-hint">
+          Backs are mirrored by column to align with the fronts.
+        </p>
+      )}
+      <div
+        className="sheet-scroller"
+        ref={setScroller}
+        style={{ "--sheet-scale": scale } as CSSProperties}
+        /* A card can miss its own pointer leave; this clears what it left. */
+        onPointerLeave={() => {
+          const ui = useUiStore.getState();
+          const id = ui.highlightedCardId;
+          if (!id || id === located) return;
+          const focused = document.activeElement
+            ?.closest("[data-card-id]")
+            ?.getAttribute("data-card-id");
+          if (focused !== id) ui.setHighlightedCardId(null);
+        }}
+        data-compact={
+          mmToPx(layout.cardWidthMm) * scale < COMPACT_CARD_PX || undefined
+        }
+      >
+        {!cards.length ? (
+          <div className="sheet-frame" style={{ width: frameWidth }}>
+            <div className="proxy-page empty-sheet" style={pageStyle}>
+              <div className="empty-sheet-message">
+                <h2>No cards yet</h2>
+                <p>
+                  Paste a decklist in the Deck panel, or drop card images
+                  anywhere.
+                </p>
+                <button
+                  className="empty-sheet-add"
+                  onClick={() => useUiStore.getState().setRegion("deck")}
+                >
+                  Add cards
+                </button>
+              </div>
             </div>
           </div>
-          <span className="eyebrow">
-            A little paper. Endless possibilities.
-          </span>
-          <h2>
-            Your next deck
-            <br />
-            starts here.
-          </h2>
-          <p>
-            Paste a decklist or upload your artwork. We’ll lay out your cards,
-            add cutting guides, and make a PDF ready for your printer.
-          </p>
-          <div className="empty-features">
-            <span>
-              <Layers3 size={16} />
-              Choose your art
-            </span>
-            <span>
-              <LayoutGrid size={16} />
-              Print at home
-            </span>
-          </div>
-        </div>
-      ) : (
-        <>
-          <div className="preview-caption">
-            <span>
-              {s.pageSizePreset} · {s.columns} × {s.rows} layout
-            </span>
-            <span>
-              {pageCount} {pageCount === 1 ? "sheet" : "sheets"}
-            </span>
-          </div>
-          {s.viewMode === "back" && (
-            <p className="back-hint">
-              Backs are mirrored by column to align with the fronts.
-            </p>
-          )}
-          <div className="sheet-scroller">
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={({ active, over }) => {
-                if (!over || active.id === over.id) return;
-                const current = useCardsStore.getState().cards;
-                const from = current.findIndex((c) => c.uuid === active.id),
-                  to = current.findIndex((c) => c.uuid === over.id);
-                if (from >= 0 && to >= 0)
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={({ active, over }) => {
+              if (!over || active.id === over.id) return;
+              const current = useCardsStore.getState().cards;
+              const from = current.findIndex((c) => c.uuid === active.id),
+                to = current.findIndex((c) => c.uuid === over.id);
+              if (from >= 0 && to >= 0)
+                deckEdit(`move ${current[from].name}`, () =>
                   useCardsStore
                     .getState()
-                    .setCards(arrayMove(current, from, to));
-              }}
+                    .setCards(arrayMove(current, from, to))
+                );
+            }}
+          >
+            <SortableContext
+              items={cards.map((c) => c.uuid)}
+              strategy={rectSortingStrategy}
             >
-              <SortableContext
-                items={cards.map((c) => c.uuid)}
-                strategy={rectSortingStrategy}
-              >
-                {Array.from({ length: pageCount }, (_, pageIndex) => (
-                  <div
-                    className="sheet-frame"
-                    key={pageIndex}
-                    style={{
-                      width: ((layout.pageWidthMm * 96) / 25.4) * scale,
-                    }}
-                  >
-                    <div className="sheet-label">
-                      Sheet {pageIndex + 1}
-                      <span>{s.viewMode === "front" ? "Front" : "Back"}</span>
-                    </div>
-                    <div
-                      className="proxy-page"
-                      style={
-                        {
-                          zoom: scale,
-                          width: `${layout.pageWidthMm}mm`,
-                          height: `${layout.pageHeightMm}mm`,
-                          "--control-zoom": 1 / scale,
-                        } as CSSProperties
-                      }
-                    >
-                      <div
-                        className="card-grid"
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns: `repeat(${s.columns}, ${layout.cardWidthMm}mm)`,
-                          gridTemplateRows: `repeat(${s.rows}, ${layout.cardHeightMm}mm)`,
-                          gap: `${s.cardSpacingMm}mm`,
-                        }}
-                      >
-                        {pageSlots(
-                          cards.slice(
-                            pageIndex * capacity,
-                            (pageIndex + 1) * capacity
-                          ),
-                          s.columns,
-                          s.rows,
-                          s.viewMode === "back"
-                        ).map((card, slot) =>
-                          !card ? (
-                            <div key={`empty-${slot}`} aria-hidden="true" />
-                          ) : (
-                            <CardCellLazy
-                              key={`${card.uuid}:${s.viewMode}:${s.bleedEdgeWidth}:${s.useHighQualityPreviews}:${s.customCardbackUrl?.length}:${s.customCardbackHasBleed}`}
-                              card={card}
-                              state={
-                                loadingMap[
-                                  `${card.uuid}:${s.viewMode === "back"}`
-                                ] ?? "idle"
-                              }
-                              hasImage={
-                                !!(s.viewMode === "front"
-                                  ? fronts[card.uuid]
-                                  : backs[card.uuid])
-                              }
-                              ensureProcessed={
-                                s.viewMode === "front"
-                                  ? ensureProcessed
-                                  : ensureBackFaceProcessed
-                              }
-                            >
-                              <SortableCard
-                                card={card}
-                                globalIndex={indices.get(card.uuid) ?? -1}
-                                imageSrc={
-                                  (s.viewMode === "front"
-                                    ? fronts[card.uuid]
-                                    : backs[card.uuid]) || ""
-                                }
-                                totalCardWidth={layout.cardWidthMm}
-                                totalCardHeight={layout.cardHeightMm}
-                                viewMode={s.viewMode}
-                                disableBackPageGuides={s.disableBackPageGuides}
-                              />
-                            </CardCellLazy>
-                          )
-                        )}
-                      </div>
-                      {!(s.viewMode === "back" && s.disableBackPageGuides) && (
-                        <EdgeCutLines />
-                      )}
-                    </div>
+              {Array.from({ length: pageCount }, (_, pageIndex) => (
+                <div
+                  className="sheet-frame"
+                  key={pageIndex}
+                  style={{ width: frameWidth }}
+                >
+                  <div className="sheet-label">
+                    Sheet {pageIndex + 1}
+                    <span>{back ? "Back" : "Front"}</span>
                   </div>
-                ))}
-              </SortableContext>
-            </DndContext>
-          </div>
-        </>
-      )}
+                  <div className="proxy-page" style={pageStyle}>
+                    <div
+                      className="card-grid"
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: `repeat(${s.columns}, ${layout.cardWidthMm}mm)`,
+                        gridTemplateRows: `repeat(${s.rows}, ${layout.cardHeightMm}mm)`,
+                        gap: `${s.cardSpacingMm}mm`,
+                      }}
+                    >
+                      {pageSlots(
+                        cards.slice(
+                          pageIndex * capacity,
+                          (pageIndex + 1) * capacity
+                        ),
+                        s.columns,
+                        s.rows,
+                        back
+                      ).map((card, slot) => {
+                        if (!card)
+                          return (
+                            <div key={`empty-${slot}`} aria-hidden="true" />
+                          );
+                        const imageSrc =
+                          (back
+                            ? images.selectedBackFaceImages
+                            : images.selectedImages)[card.uuid] || "";
+                        const source = hasSource(card);
+                        const state: CardState = imageSrc
+                          ? "ready"
+                          : !source
+                            ? "missing"
+                            : previewStatus[`${card.uuid}:${back}`] === "error"
+                              ? "failed"
+                              : "loading";
+                        return (
+                          <CardCellLazy
+                            key={`${card.uuid}:${s.viewMode}:${s.bleedEdgeWidth}:${s.useHighQualityPreviews}:${s.customCardbackUrl?.length}:${s.customCardbackHasBleed}`}
+                            card={card}
+                            hasImage={!!imageSrc}
+                            hasSource={source}
+                            ensureProcessed={ensure}
+                          >
+                            <SortableCard
+                              card={card}
+                              globalIndex={indices.get(card.uuid) ?? -1}
+                              imageSrc={imageSrc}
+                              state={state}
+                              located={located === card.uuid}
+                              onRetry={ensure}
+                              totalCardWidth={layout.cardWidthMm}
+                              totalCardHeight={layout.cardHeightMm}
+                              viewMode={s.viewMode}
+                              disableBackPageGuides={s.disableBackPageGuides}
+                            />
+                          </CardCellLazy>
+                        );
+                      })}
+                    </div>
+                    {!(back && s.disableBackPageGuides) && <EdgeCutLines />}
+                  </div>
+                </div>
+              ))}
+            </SortableContext>
+          </DndContext>
+        )}
+      </div>
       <Suspense fallback={null}>
         <ArtworkModal
-          loadingMap={loadingMap}
-          errorMap={errorMap}
           onRetry={(card, back) => {
             void (back ? ensureBackFaceProcessed : ensureProcessed)(card);
           }}

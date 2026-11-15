@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   createTaskQueue,
   blobToDataUrl,
@@ -8,11 +8,10 @@ import {
 import { renderCardImage } from "../helpers/renderCardImage";
 import { cardSource } from "../helpers/cardSources";
 import { cardBleedOptions } from "../helpers/cardBleedOptions";
-import { useCardsStore, useSettingsStore } from "../store";
+import { useCardsStore, usePreviewStore, useSettingsStore } from "../store";
 import type { CardOption } from "../types/Card";
 import type { BleedArtworkOptions } from "../helpers/bleedArtwork";
 
-export type LoadState = "idle" | "loading" | "error";
 type PreviewJob = {
   card: CardOption;
   source: string | File | undefined;
@@ -45,8 +44,6 @@ export function useImageProcessing({
   const scanInsetMm = useSettingsStore((s) => s.scanInsetMm);
   const borderBleed = useSettingsStore((s) => s.borderBleed);
   const scanCornerRadiusMm = useSettingsStore((s) => s.scanCornerRadiusMm);
-  const [loadingMap, setLoadingMap] = useState<Record<string, LoadState>>({});
-  const [errorMap, setErrorMap] = useState<Record<string, string>>({});
   const inFlight = useRef(new Map<string, PreviewJob>());
   const generation = useRef(0);
   useEffect(
@@ -129,12 +126,8 @@ export function useImageProcessing({
           currentSource.hasBakedBleed === hasBakedBleed
         );
       };
-      setLoadingMap((m) => ({ ...m, [key]: "loading" }));
-      setErrorMap((m) => {
-        const next = { ...m };
-        delete next[key];
-        return next;
-      });
+      const { setStatus } = usePreviewStore.getState();
+      setStatus(key, "loading");
       const enqueue =
         hasBakedBleed ||
         typeof source !== "string" ||
@@ -175,18 +168,17 @@ export function useImageProcessing({
           useCardsStore
             .getState()
             .setProcessedImage(card.uuid, back, preview, report);
-          setLoadingMap((m) => ({ ...m, [key]: "idle" }));
+          setStatus(key, "idle");
         } catch (error) {
           if (isCurrent()) {
             console.warn(`Could not prepare ${card.name}`, error);
-            setErrorMap((m) => ({
-              ...m,
-              [key]:
-                error instanceof Error
-                  ? error.message
-                  : "Could not prepare this image. Please try again.",
-            }));
-            setLoadingMap((m) => ({ ...m, [key]: "error" }));
+            setStatus(
+              key,
+              "error",
+              error instanceof Error
+                ? error.message
+                : "Could not prepare this image. Please try again."
+            );
           }
         } finally {
           if (uploadUrl) URL.revokeObjectURL(uploadUrl);
@@ -215,5 +207,5 @@ export function useImageProcessing({
     (card: CardOption) => process(card, true),
     [process]
   );
-  return { loadingMap, errorMap, ensureProcessed, ensureBackFaceProcessed };
+  return { ensureProcessed, ensureBackFaceProcessed };
 }

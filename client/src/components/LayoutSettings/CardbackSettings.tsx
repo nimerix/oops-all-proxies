@@ -68,14 +68,6 @@ export function CardbackSettings() {
         />{" "}
         Hide cutting guides on backs
       </label>
-      <label className="check-field">
-        <input
-          type="checkbox"
-          checked={s.exportCollated}
-          onChange={(e) => s.setExportCollated(e.target.checked)}
-        />{" "}
-        Collate fronts and backs in one PDF
-      </label>
     </>
   );
 }

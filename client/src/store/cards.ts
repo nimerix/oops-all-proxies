@@ -14,7 +14,7 @@ import { notify } from "./notifications";
 import type { BleedReport } from "../helpers/bleedReport";
 import type { CardOption } from "../types/Card";
 
-type Store = {
+export type CardsState = {
   // ---------- persisted ----------
   cards: CardOption[];
 
@@ -84,7 +84,7 @@ function strip<T>(map: Record<string, T>, ids: Set<string>) {
   return Object.fromEntries(Object.entries(map).filter(([id]) => !ids.has(id)));
 }
 
-function removeImages(state: Store, ids: Set<string>) {
+function removeImages(state: CardsState, ids: Set<string>) {
   return {
     bleedReports: strip(state.bleedReports, ids),
     selectedImages: strip(state.selectedImages, ids),
@@ -96,7 +96,7 @@ function removeImages(state: Store, ids: Set<string>) {
   };
 }
 
-export const useCardsStore = create<Store>()(
+export const useCardsStore = create<CardsState>()(
   persist(
     (set, get) => ({
       ...emptyImages(),
@@ -242,7 +242,9 @@ export const useCardsStore = create<Store>()(
         reportStorageError("hydrate:cards", hydrationErrorMessage(error)),
       name: "proxxied:cards:v7",
       version: 8,
-      storage: createIndexedDBStorage<Partial<Store>>(["proxxied:cards:v6"]),
+      storage: createIndexedDBStorage<Partial<CardsState>>([
+        "proxxied:cards:v6",
+      ]),
       partialize: (s) => ({
         cards: s.cards,
         globalLanguage: s.globalLanguage,
@@ -251,9 +253,9 @@ export const useCardsStore = create<Store>()(
         uploadedFiles: s.uploadedFiles,
         uploadedBackFiles: s.uploadedBackFiles,
       }),
-      migrate: (value) => (value ?? {}) as Partial<Store>,
+      migrate: (value) => (value ?? {}) as Partial<CardsState>,
       merge: (value, current) => {
-        const saved = (value ?? {}) as Partial<Store> & {
+        const saved = (value ?? {}) as Partial<CardsState> & {
           cachedImageUrls?: Record<string, string>;
         };
         return {

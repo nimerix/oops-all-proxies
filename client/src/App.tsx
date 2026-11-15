@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { X, AlertCircle, CheckCircle2 } from "lucide-react";
 import { Loader } from "./components/Loader";
+import { ConfirmDialog } from "./components/feedback/ConfirmDialog";
+import { Notifications } from "./components/feedback/Notifications";
 import ProxyBuilderPage from "./pages/ProxyBuilderPage";
 import { useCardsStore, useSettingsStore } from "./store";
 import {
@@ -8,37 +9,14 @@ import {
   reportStorageError,
   useStorageStatus,
 } from "./helpers/IndexedDBStorage";
-import { useNotifications, type Notice } from "./store/notifications";
+import { confirmAction, DELETE_SAVED_DATA } from "./store/confirm";
+import { notify } from "./store/notifications";
+import { undoFromUser } from "./store/undo";
 
-function Notification({ notice: n }: { notice: Notice }) {
-  const [paused, setPaused] = useState(false);
-  const dismiss = useNotifications((s) => s.dismiss);
-  useEffect(() => {
-    if (paused || n.kind === "error") return;
-    const timer = setTimeout(() => dismiss(n.id), 8000);
-    return () => clearTimeout(timer);
-  }, [paused, n.id, n.kind, dismiss]);
+function isTextEntry(target: EventTarget | null) {
   return (
-    <div
-      className={`notice ${n.kind}`}
-      role={n.kind === "error" ? "alert" : "status"}
-      onPointerEnter={() => setPaused(true)}
-      onPointerLeave={() => setPaused(false)}
-      onFocusCapture={() => setPaused(true)}
-      onBlurCapture={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget)) setPaused(false);
-      }}
-    >
-      {n.kind === "success" ? (
-        <CheckCircle2 size={19} aria-hidden="true" />
-      ) : (
-        <AlertCircle size={19} aria-hidden="true" />
-      )}
-      <p>{n.message}</p>
-      <button aria-label="Dismiss notification" onClick={() => dismiss(n.id)}>
-        <X size={17} aria-hidden="true" />
-      </button>
-    </div>
+    target instanceof HTMLElement &&
+    (target.isContentEditable || target.matches("input, textarea, select"))
   );
 }
 
@@ -50,7 +28,6 @@ function App() {
   const storageError = useStorageStatus((s) => s.error);
   const savingDisabled = useStorageStatus((s) => s.savingDisabled);
   const [resetting, setResetting] = useState(false);
-  const notices = useNotifications((s) => s.notices);
   useEffect(() => {
     const done = () =>
       setHydrated(
@@ -64,6 +41,23 @@ function App() {
       offCards();
       offSettings();
     };
+  }, []);
+  useEffect(() => {
+    const undoOnShortcut = (e: KeyboardEvent) => {
+      if (
+        e.key.toLowerCase() !== "z" ||
+        !(e.ctrlKey || e.metaKey) ||
+        e.shiftKey ||
+        e.altKey ||
+        isTextEntry(e.target)
+      )
+        return;
+      e.preventDefault();
+      const label = undoFromUser();
+      if (label) notify(`Undid: ${label}.`);
+    };
+    window.addEventListener("keydown", undoOnShortcut);
+    return () => window.removeEventListener("keydown", undoOnShortcut);
   }, []);
   return (
     <>
@@ -114,13 +108,9 @@ function App() {
               <button
                 className="text-button danger"
                 disabled={resetting}
-                onClick={async () => {
-                  if (
-                    !window.confirm(
-                      "Delete this browser’s saved cards, uploads and print settings? This cannot be undone."
-                    )
-                  )
-                    return;
+                onClick={async (e) => {
+                  e.currentTarget.focus();
+                  if (!(await confirmAction(DELETE_SAVED_DATA))) return;
                   setResetting(true);
                   try {
                     const cards = useCardsStore.persist.getOptions(),
@@ -154,11 +144,8 @@ function App() {
           )}
         </main>
       )}
-      <section className="notifications" aria-label="Notifications">
-        {notices.map((n) => (
-          <Notification key={n.id} notice={n} />
-        ))}
-      </section>
+      <ConfirmDialog />
+      <Notifications />
     </>
   );
 }

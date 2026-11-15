@@ -1,0 +1,421 @@
+.preview-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-mat);
+  color: var(--text-on-mat);
+}
+.preview-toolbar {
+  --focus: var(--text-on-mat);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--mat-grid);
+  flex-wrap: wrap;
+}
+.view-switch {
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+}
+.view-switch button {
+  padding: 4px 14px;
+  border-radius: 4px;
+  font-size: var(--text-secondary);
+  color: var(--text-muted);
+}
+.view-switch button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+.sheet-nav,
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.sheet-position,
+.zoom-readout {
+  font-size: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sheet-position {
+  min-width: 92px;
+  text-align: center;
+}
+.zoom-readout {
+  min-width: 40px;
+  text-align: center;
+  color: var(--text-on-mat-muted);
+}
+.mat-button,
+.zoom-controls select {
+  height: 32px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.mat-button {
+  width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.zoom-controls select {
+  padding: 0 6px;
+  font-size: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.back-hint {
+  padding: var(--space-2) var(--space-5) 0;
+  color: var(--text-on-mat-muted);
+  font-size: var(--text-caption);
+}
+/* Grid squares are 10 mm of the document at the scale the sheet is drawn. */
+.sheet-scroller {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  scroll-padding: 16px;
+  background-color: var(--bg-mat);
+  background-image:
+    linear-gradient(to right, var(--mat-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--mat-grid) 1px, transparent 1px);
+  background-size: calc(10mm * var(--sheet-scale, 1))
+    calc(10mm * var(--sheet-scale, 1));
+  background-attachment: local;
+}
+.sheet-frame {
+  margin: 0 auto;
+}
+.sheet-frame + .sheet-frame {
+  margin-top: 28px;
+}
+.sheet-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--text-caption);
+  font-weight: 500;
+  margin-bottom: var(--space-2);
+  color: var(--text-on-mat-muted);
+}
+.proxy-page {
+  background: var(--paper);
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-paper);
+}
+.empty-sheet-message {
+  --z: var(--control-zoom, 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--space-3) * var(--z));
+  max-width: calc(300px * var(--z));
+  padding: calc(var(--space-4) * var(--z));
+  text-align: center;
+}
+.empty-sheet-message h2 {
+  font-size: calc(1.25rem * var(--z));
+}
+.empty-sheet-message p {
+  font-size: calc(var(--text-body) * var(--z));
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.empty-sheet-add {
+  margin-top: calc(var(--space-1) * var(--z));
+  padding: calc(8px * var(--z)) calc(16px * var(--z));
+  border: calc(1px * var(--z)) solid var(--border-control);
+  border-radius: calc(var(--radius-control) * var(--z));
+  background: var(--bg-raised);
+  font-size: calc(var(--text-body) * var(--z));
+  font-weight: 600;
+}
+.card-cell {
+  position: relative;
+}
+.sortable-card {
+  position: relative;
+  background: var(--bg-panel);
+}
+/* Rings drawn over the artwork, sized against the sheet's zoom. */
+.sortable-card::before,
+.sortable-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 150ms ease-out;
+}
+.sortable-card::after {
+  box-shadow:
+    inset 0 0 0 calc(2px * var(--control-zoom, 1)) var(--text),
+    inset 0 0 0 calc(4px * var(--control-zoom, 1)) var(--paper);
+}
+.sortable-card::before {
+  box-shadow:
+    inset 0 0 0 calc(3px * var(--control-zoom, 1)) var(--focus),
+    inset 0 0 0 calc(5px * var(--control-zoom, 1)) var(--paper);
+}
+.sortable-card:has(.card-art:focus-visible)::after,
+.sortable-card[data-located]::before {
+  opacity: 1;
+}
+.card-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  text-align: center;
+}
+.card-art:focus-visible {
+  outline: none;
+}
+.card-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.card-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.card-state {
+  --z: var(--control-zoom, 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--space-1) * var(--z));
+  height: 100%;
+  padding: calc(var(--space-3) * var(--z));
+  overflow: hidden;
+  color: var(--text);
+  font-size: calc(var(--text-secondary) * var(--z));
+  line-height: 1.35;
+  background: var(--bg-panel);
+}
+.card-state strong {
+  max-width: 100%;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+/* Cards too small on screen for words show the state by colour and icon. */
+.sheet-scroller[data-compact] .card-state :is(strong, span) {
+  display: none;
+}
+.card-state.loading .card-state-icon {
+  display: none;
+  color: var(--text-muted);
+}
+.sheet-scroller[data-compact] .card-state.loading .card-state-icon {
+  display: block;
+}
+.card-state span {
+  color: var(--text-muted);
+}
+.card-state-icon {
+  width: calc(20px * var(--z));
+  height: calc(20px * var(--z));
+}
+.card-state.missing {
+  border: calc(2px * var(--z)) dashed var(--warn);
+  background: var(--warn-soft);
+}
+.card-state.missing .card-state-icon {
+  color: var(--warn);
+}
+.card-state .card-state-action {
+  margin-top: calc(var(--space-1) * var(--z));
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: calc(3px * var(--z));
+}
+.card-state.failed {
+  padding-bottom: calc(48px * var(--z));
+  background: var(--danger-soft);
+}
+.card-state.failed .card-state-icon {
+  color: var(--danger);
+}
+.card-retry {
+  position: absolute;
+  inset: auto 0 12px;
+  z-index: 2;
+  width: max-content;
+  margin-inline: auto;
+  padding: 4px 12px;
+  min-height: 28px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: var(--text-secondary);
+  font-weight: 600;
+  zoom: var(--control-zoom, 1);
+}
+.card-control,
+.card-menu summary {
+  background: var(--bg-raised);
+  color: var(--text);
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  zoom: var(--control-zoom, 1);
+}
+/* Two-tone so the ring holds against light and dark artwork alike. */
+.sortable-card :is(.card-control, .card-menu summary, .card-retry):focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--paper);
+}
+.card-control {
+  position: absolute;
+  z-index: 2;
+}
+.drag-handle {
+  top: 4px;
+  right: 4px;
+  cursor: grab;
+  touch-action: none;
+}
+.flip-card {
+  top: 4px;
+  left: 4px;
+}
+.back-upload {
+  bottom: 4px;
+  left: 4px;
+}
+.card-menu {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  z-index: 3;
+}
+.card-menu[open] {
+  z-index: 20;
+}
+.card-menu summary {
+  list-style: none;
+}
+.card-menu summary::-webkit-details-marker {
+  display: none;
+}
+.card-menu > div {
+  position: absolute;
+  right: 0;
+  bottom: 34px;
+  width: 160px;
+  padding: 6px;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border-control);
+  box-shadow: var(--shadow-overlay);
+  border-radius: var(--radius-overlay);
+  zoom: var(--control-zoom, 1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.card-menu strong {
+  display: block;
+  font-size: var(--text-caption);
+  padding: 6px;
+  overflow-wrap: anywhere;
+}
+.card-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  text-align: left;
+  font-size: var(--text-secondary);
+  border-radius: 4px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .card-state.loading {
+    animation: card-pulse 1.6s ease-in-out infinite alternate;
+  }
+}
+@keyframes card-pulse {
+  to {
+    background-color: var(--border);
+  }
+}
+@media (hover: hover) {
+  .card-control,
+  .card-menu summary {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  .sortable-card:is(:hover, :focus-within)
+    :is(.card-control, .card-menu summary),
+  .card-menu[open] summary {
+    opacity: 1;
+  }
+  .mat-button:enabled:hover,
+  .zoom-controls select:hover,
+  .card-retry:hover {
+    background: var(--bg-panel);
+  }
+  .card-menu button:enabled:hover {
+    background: var(--accent-soft);
+  }
+}
+@media (min-width: 760px) {
+  .empty-sheet-add {
+    display: none;
+  }
+}
+@media (max-width: 1099px) {
+  .preview-toolbar {
+    padding: 10px 12px;
+  }
+}
+@media (max-width: 600px) {
+  .drag-handle,
+  .flip-card,
+  .back-upload {
+    display: none;
+  }
+  .card-menu summary {
+    width: 32px;
+    height: 32px;
+  }
+  .card-menu button {
+    min-height: 36px;
+  }
+}
+@media (max-width: 480px) {
+  .preview-toolbar {
+    justify-content: center;
+  }
+  .view-switch button {
+    padding: 4px 10px;
+  }
+  .sheet-position {
+    min-width: 0;
+  }
+}

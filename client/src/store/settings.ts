@@ -28,6 +28,8 @@ export type LayoutPreset =
 export type PageOrientation = "portrait" | "landscape";
 export type ExportDpi = 600 | 900 | 1200;
 export type ViewMode = "front" | "back";
+export type ZoomMode = "page" | "width" | "custom";
+const zoomModes: ZoomMode[] = ["page", "width", "custom"];
 
 type Store = {
   pageSizeUnit: "mm" | "in";
@@ -63,6 +65,8 @@ type Store = {
   setGuideWidth: (value: number) => void;
   zoom: number;
   setZoom: (value: number) => void;
+  zoomMode: ZoomMode;
+  setZoomMode: (mode: ZoomMode) => void;
   resetSettings: () => void;
   cardSpacingMm: number;
   setCardSpacingMm: (mm: number) => void;
@@ -96,6 +100,8 @@ type Store = {
   setDisableBackPageGuides: (value: boolean) => void;
   exportCollated: boolean;
   setExportCollated: (value: boolean) => void;
+  twoSided: boolean;
+  setTwoSided: (value: boolean) => void;
   useHighQualityPreviews: boolean;
   setUseHighQualityPreviews: (value: boolean) => void;
 };
@@ -121,6 +127,7 @@ export const defaultPageSettings = {
   guideWidth: 0.5,
   cardSpacingMm: 0,
   zoom: 1,
+  zoomMode: "page",
   exportDpi: 600,
   useExportBatching: false,
   exportBatchSize: 20,
@@ -136,10 +143,11 @@ export const defaultPageSettings = {
   customCardbackHasBleed: false,
   disableBackPageGuides: true,
   exportCollated: false,
+  twoSided: false,
   useHighQualityPreviews: false,
 } as Store;
 
-const layoutPresetsSizes: Record<
+export const layoutPresetsSizes: Record<
   LayoutPreset,
   { pageWidth: number; pageHeight: number; pageSizeUnit: "in" | "mm" }
 > = {
@@ -163,7 +171,7 @@ function fitPreferredGrid(s: Store): Store {
   });
 }
 
-function restoreSettings(value: unknown): Partial<Store> {
+export function restoreSettings(value: unknown): Partial<Store> {
   const saved =
     value && typeof value === "object" ? (value as Partial<Store>) : {};
   const result = { ...defaultPageSettings };
@@ -183,6 +191,10 @@ function restoreSettings(value: unknown): Partial<Store> {
       : "Letter";
   const size = layoutPresetsSizes[preset];
   const landscape = saved.pageOrientation === "landscape";
+  const zoomMode =
+    saved.zoomMode && zoomModes.includes(saved.zoomMode)
+      ? saved.zoomMode
+      : undefined;
   Object.assign(result, {
     gridMode:
       saved.gridMode === "auto"
@@ -220,7 +232,12 @@ function restoreSettings(value: unknown): Partial<Store> {
     guideColor: /^#[0-9a-f]{6}$/i.test(result.guideColor)
       ? result.guideColor
       : "#39FF14",
-    zoom: finiteClamp(result.zoom, 0.1, 3, 1),
+    zoom: zoomMode ? finiteClamp(result.zoom, 0.1, 3, 1) : 1,
+    zoomMode: zoomMode ?? "page",
+    twoSided:
+      typeof saved.twoSided === "boolean"
+        ? saved.twoSided
+        : saved.exportCollated === true,
     exportDpi: [600, 900, 1200].includes(result.exportDpi)
       ? result.exportDpi
       : 600,
@@ -317,7 +334,9 @@ export const useSettingsStore = create<Store>()(
       setGuideColor: (guideColor) => set({ guideColor }),
       setGuideWidth: (value) =>
         set({ guideWidth: finiteClamp(value, 0.1, 4, 0.5) }),
-      setZoom: (value) => set({ zoom: finiteClamp(value, 0.1, 3, 1) }),
+      setZoom: (value) =>
+        set({ zoom: finiteClamp(value, 0.1, 3, 1), zoomMode: "custom" }),
+      setZoomMode: (zoomMode) => set({ zoomMode }),
       setExportDpi: (exportDpi) => set({ exportDpi }),
       setUseExportBatching: (useExportBatching) => set({ useExportBatching }),
       setExportBatchSize: (value) =>
@@ -343,6 +362,7 @@ export const useSettingsStore = create<Store>()(
       setDisableBackPageGuides: (disableBackPageGuides) =>
         set({ disableBackPageGuides }),
       setExportCollated: (exportCollated) => set({ exportCollated }),
+      setTwoSided: (twoSided) => set({ twoSided }),
       setUseHighQualityPreviews: (useHighQualityPreviews) =>
         set({ useHighQualityPreviews }),
     }),

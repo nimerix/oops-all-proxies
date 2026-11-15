@@ -72,3 +72,48 @@ The tests deliberately use controlled card artwork, so screenshots illustrate la
 Physical printer scaling, printable margins and duplex registration require a real print. Automated keyboard/axe checks do not establish full screen-reader usability, and browser viewport emulation is not a physical phone test. Live Google Drive images depend on public sharing and provider download limits; automated MPC tests use controlled responses. Production hosting, the existing Netlify/Koyeb redirect, Docker runtime, Windows PowerShell helper and sustained multi-user traffic have not been deployed or exercised here. Workspaces are local to a browser, with one active editing tab assumed; cross-tab collaborative editing is not implemented.
 
 Earlier versions did not persist every uploaded file. Expired legacy blob URLs or files that were never saved cannot be reconstructed; those images require re-upload.
+
+## Interface revamp (2026-11-14)
+
+The interface was evaluated from scratch and restructured. The print pipeline, storage format and server were not changed. The design, with the full findings table, is in [docs/superpowers/specs/2026-11-14-ui-revamp-design.md](superpowers/specs/2026-11-14-ui-revamp-design.md); the build plan is in [docs/superpowers/plans/2026-11-14-ui-revamp.md](superpowers/plans/2026-11-14-ui-revamp.md).
+
+### How it was done
+
+Two reviewers evaluated the old interface independently (Claude, and GPT-6 Astra without sight of the first review) and agreed on the diagnosis: the layout followed the order of first use instead of what a user checks and does for most of a session. They then agreed one design. Astra's four blocking conditions were written into it: named target sets for artwork changes, undo as whole-action transactions, a saved one-sided choice taking precedence over the old collate setting, and no whole-card dragging. Opus 5.5 built it in five tasks. Each task had a separate reviewer and one fix round. Astra then reviewed the finished build, one fix wave followed, and Astra signed it off with the residual items listed under "Limits".
+
+### Findings addressed
+
+| Before | Now |
+| --- | --- |
+| Export sat below the fold at 1440×900 and at the bottom of the third tab on a phone. | Export is in the top bar at every width. It opens a dialog holding the output choices and the print instructions. |
+| An unknown card name showed "Load failed · retry", which could never work, drawn over the name. The only accurate message was a toast that left after 8 seconds. | The card says "No artwork found" and offers "Find artwork". The Deck panel lists it under "needs artwork" until it is fixed. No preview is attempted and no retry is offered. |
+| Loading cards read "Choose artwork" with a spinner over the name. | Loading cards show the name and "Loading artwork…", with no overlap and no reliance on motion. |
+| The print sheets were the only view of the deck. | The Deck panel lists every distinct card with quantity buttons, a filter, and a menu that can do everything the card's own menu can. |
+| The left column was an add-cards form for the whole session. | Adding cards fills the Deck panel only while the deck is empty; afterwards it is a dialog. Files can be dropped anywhere. |
+| Two to four buttons covered every card's artwork permanently. | Controls appear when a card is hovered or focused. On touch they stay visible. |
+| "100%" meant "fits the width", and a whole sheet could not be shown. | Fit page is the default. The percentage is document scale. |
+| Expert bleed controls were as loud as paper size, and the print-at-100% instruction was 11 px text. | Paper, Sides and Cutting lead. Edge-repair controls are under "Advanced". The print instructions are in the export dialog at body size. |
+| A checkbox in another section decided which export buttons existed. | Sides is a choice in Print setup; the export dialog offers the matching outputs. |
+| The picker showed 8 of 72 printings, labelled by set code. "Apply to every" silently discarded uploads. | 21 printings are visible at 1440×900, with set names and years. A choice names its target (this copy, this row, or every card of that name) and says when uploads will be replaced. |
+| Removing one card raised a browser confirm. Nothing could be undone. | Removal is immediate and undoable. Undo covers the last 20 deck changes. Confirmation remains for clearing the deck and resetting data. |
+| 40 text nodes under 12 px; a typeface named but never loaded. | No text under 12 px. The system interface face is used and no font file is requested. |
+| Taglines, numbered eyebrows, "1 need artwork". | Removed. Counts go through one plural helper. |
+
+### Verification
+
+- `npm run check`: lint, 202 client unit tests, 8 server tests, TypeScript and both builds.
+- Browser suite: 196 tests, 98 each on Chromium and WebKit (132 before). Three consecutive full runs passed. The existing PDF, pixel, ZIP, saved-data and cancellation assertions were kept; tests changed only how they reach a control. A WebKit test that failed about one run in four during the build passed 15 of 15 after its cause was fixed (card controls no longer depend on a shared hover flag).
+- Axe scans in light and dark at 1440, 768, 390 and 320 px for the empty deck, a populated deck, the export dialog, both picker tabs and the confirm dialog. No violations, no excluded rules.
+- Measured in the running app (`.artifacts/ui-revamp/after/measure.json`): every text pair at or above 4.5:1 and every control boundary and focus ring at or above 3:1, with two noted exceptions below; Export inside the viewport without scrolling at 1440×900 and in all three phone regions; a whole sheet inside the view at Fit page for Letter portrait, Letter landscape and A1; no sideways scroll at 320 px in any region or dialog; card controls at opacity 0 at rest and 1 on hover and on keyboard focus.
+- Screenshots: the old interface in `.artifacts/ui-revamp/baseline/` and the new one, in the same states, in `.artifacts/ui-revamp/after/`.
+
+### Limits
+
+- Not tested on a physical phone or tablet, with a screen reader, or with a real file dragged in from the desktop. Touch, drag-and-drop and announcements were checked through emulation, synthetic events and markup.
+- Safe-area padding for notched phones is implemented and tested by overriding the inset values; it has not been seen on an iOS device.
+- A notice shows at the bottom centre of the sheet area for 8 seconds and can cover part of a sheet, or on a phone the last item of an open row menu.
+- Uploading a back to a deck row with several copies splits it into one row per copy, because each copy keeps its own uploaded file.
+- Two measured contrast exceptions, both judged acceptable: control borders on the light-theme mat are 2.65:1, but the control's white fill against the mat (9.5:1) is its boundary; the temporary ring drawn after "Show on the sheet" can fall to 2.2:1 against some artwork, and it is not the focus ring.
+- `Lightning Bolt (m11) 146` imports as M11 #149 without a message. That is the server's matching and predates this work.
+- Deferred by agreement: selecting several cards for bulk actions, and dragging a card by its whole face.
+- Smaller follow-ups recorded during review: deck rows re-render on every deck change; the storage-clearing code exists in two places; the artwork-change mutation lives in a component without unit tests; an uploaded back chosen while a copy is being added misses the new copy.
