@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "private": true,
+  "packageManager": "npm@11.6.2",
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix client\" \"npm run dev --prefix worker\"",
     "build": "npm run build --prefix client",
