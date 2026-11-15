@@ -88,7 +88,7 @@ can be included with `TEST_FIREFOX=1 npm run test:e2e` after installing its
 Playwright browser; its browser process could not start in the current local
 environment, so it is not counted as verified.
 
-## Configure and deploy
+## Configure
 
 Client build configuration (`client/.env.local`):
 
@@ -97,17 +97,6 @@ Client build configuration (`client/.env.local`):
 | `VITE_API_BASE`      | empty                      | Origin of the Worker when it is hosted separately from the site. Empty uses same-origin `/api`. |
 | `VITE_SCRYFALL_HOST` | `https://api.scryfall.com` | Scryfall API origin.                                                                            |
 
-The site deploys to Cloudflare as one Worker on the free plan: the built client is served as static assets, and only `/api/*` runs Worker code.
-
-```sh
-(cd worker && npx wrangler login)   # once
-npm run deploy                      # builds the client, then runs wrangler deploy
-```
-
-To serve it at `www.oopsallproxies.com`, add the domain to Cloudflare, then attach it to the `oops-all-proxies` Worker under **Settings → Domains & Routes**, or add a `routes` entry with `"custom_domain": true` to [worker/wrangler.jsonc](worker/wrangler.jsonc). The Worker's edge cache only works on a custom domain, not on `workers.dev`.
-
-The Worker serves one route, `/api/cards/images/front?id=…`, for public Google Drive images. It follows redirects only between Google's download hosts, accepts only PNG, JPEG, WebP, AVIF and GIF files up to 30 MB, and keeps images in Cloudflare's edge cache for seven days. On the free plan, Cloudflare allows 100,000 Worker requests per day; requests for the site's own files do not count.
-
 ## Architecture
 
 - React components on Preact (`preact/compat`), TypeScript, Zustand, Tailwind CSS and dnd-kit in `client/`.
@@ -115,7 +104,7 @@ The Worker serves one route, `/api/cards/images/front?id=…`, for public Google
 - Shared `printLayout`, `printGuides`, `cardSources` and `canvasProcessing` helpers define printed output.
 - PDFs and ZIPs are written by small built-in writers (`pdfWriter.ts`, `zipWriter.ts`) that assemble the file from Blob parts, so card images are not copied into page memory. The sheet grid, PDF and ZIP export and the artwork picker load on demand.
 - `client/src/helpers/scryfall.ts` searches Scryfall from the browser within Scryfall's limits: 2 card searches per second and 10 other requests per second. Deck import combines cards that need the same kind of search into one `or` query, prefers the card named exactly as written, and caches searches for an hour.
-- A Cloudflare Worker in `worker/` fetches public Google Drive images for MPC imports.
+- A Cloudflare Worker in `worker/` fetches public Google Drive images for MPC imports through one route, `/api/cards/images/front?id=…`. It follows redirects only between Google's download hosts and accepts only PNG, JPEG, WebP, AVIF and GIF files up to 30 MB.
 
 ## Credits
 
