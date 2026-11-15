@@ -1,0 +1,100 @@
+.notifications {
+  position: fixed;
+  right: calc(18px + var(--safe-right));
+  bottom: calc(18px + var(--safe-bottom));
+  width: min(
+    420px,
+    calc(100vw - 36px - var(--safe-left) - var(--safe-right))
+  );
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.notice {
+  pointer-events: auto;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-overlay);
+  padding: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.notice > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+  margin-top: 2px;
+}
+.notice.error > svg {
+  color: var(--danger);
+}
+.notice p {
+  font-size: var(--text-secondary);
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.notice button {
+  flex-shrink: 0;
+  border-radius: var(--radius-control);
+}
+.notice-dismiss {
+  padding: var(--space-1);
+}
+.notice-action {
+  margin-top: -3px;
+  padding: 3px var(--space-2);
+  color: var(--accent);
+  font-size: var(--text-secondary);
+  font-weight: 600;
+}
+.storage-error {
+  flex-shrink: 0;
+  max-height: 40dvh;
+  overflow: auto;
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 12px calc(20px + var(--safe-right)) 12px
+    calc(20px + var(--safe-left));
+}
+/* Centre the stack over the mat, clear of the side panels. */
+@media (min-width: 1180px) {
+  .notifications {
+    right: auto;
+    left: calc(
+      (100vw - 20px + var(--safe-left) - var(--safe-right)) / 2
+    );
+    transform: translateX(-50%);
+    width: min(
+      380px,
+      calc(100vw - 652px - var(--safe-left) - var(--safe-right))
+    );
+  }
+}
+@media (min-width: 760px) and (max-width: 1179px) {
+  .notifications {
+    right: auto;
+    left: calc(
+      (100vw + 320px + var(--safe-left) - var(--safe-right)) / 2
+    );
+    transform: translateX(-50%);
+    width: min(
+      380px,
+      calc(100vw - 352px - var(--safe-left) - var(--safe-right))
+    );
+  }
+}
+@media (max-width: 759px) {
+  .notifications {
+    right: calc(12px + var(--safe-right));
+    bottom: calc(var(--region-bar-height) + 12px);
+    width: calc(100vw - 24px - var(--safe-left) - var(--safe-right));
+  }
+}
+@media (hover: hover) {
+  .notice-action:hover {
+    background: var(--accent-soft);
+  }
+}

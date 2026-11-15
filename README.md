@@ -2,21 +2,26 @@
 
 A browser workspace for building Magic: The Gathering proxy sheets. Paste a decklist, choose printings, upload your own artwork, arrange the deck, and download a PDF for printing at home.
 
+The workspace has three parts. **Deck** lists the cards with their quantities. The **sheet** in the middle shows each page as it will print. **Print setup** holds paper, sides, cutting and card-back choices. **Export** is in the top bar at every screen size.
+
 ## What it does
 
 - Imports quantities, split-card names, set codes and collector numbers, such as `2 Sol Ring (c21) 263`. Supports 11 card languages, with English fallback when a printing is unavailable.
-- Offers a searchable artwork picker, set filtering, double-faced cards, and applying a printing to all matching cards.
-- Accepts standard images, MPC images with **3 mm baked bleed**, and MPCFill XML/text with public Google Drive image IDs. XML slot order, assigned backs and the default cardback are preserved.
+- Lists the deck with one row per distinct card. Each row has quantity buttons and a menu for changing artwork, flipping, moving and removing, so nothing depends on finding a card on the sheet. A card the search could not match stays listed under "needs artwork" until it is fixed. The filter narrows the list by name.
+- Undoes deck changes with the Undo button or Ctrl/Cmd+Z: adding, removing, reordering, quantity, artwork, flips, uploaded backs and per-card bleed, up to the last 20, until the page is reloaded.
+- Offers a searchable artwork picker that shows printings with their set names and years, and a set filter. A choice applies to one copy, to the copies in its deck row, or to every card of that name, and says how many cards change and whether uploaded images will be replaced. Replacing a card with a different one is a separate, named action.
+- Accepts standard images, MPC images with **3 mm baked bleed**, and MPCFill XML/text with public Google Drive image IDs. XML slot order, assigned backs and the default cardback are preserved. Files can also be dropped anywhere on the window, onto one of two targets: trimmed card images, or images with 3 mm bleed. An upload filed under the wrong kind can be corrected afterwards in the picker's **Bleed for this card** tab.
 - Saves the deck, original uploaded files, assigned backs and print settings in the current browser using IndexedDB. Existing v6/v7 card workspaces and layout settings migrate in place. If storage is unavailable, you can continue in a clearly marked temporary workspace and download your work. Clearing browser data removes this local workspace; ZIP and decklist downloads provide portable originals and card lists.
 - Supports drag or keyboard reordering, duplicate/remove actions, custom backs, paper presets from Letter/A4 through A1, portrait/landscape, adjustable grid, bleed and spacing. Automatic grids maximize sheet capacity; custom grid preferences survive orientation changes.
-- Exports fronts, mirrored backs, or alternating front/back pages, including partially filled sheets. Larger exports can be split into files while keeping front/back pairs together.
+- Shows a whole sheet by default (**Fit page**), with **Fit width** and fixed zoom levels. The percentage is the scale of the document, where 100% is 96 CSS pixels per inch; it is not a measurement of your monitor. The grid behind the paper is 10 mm of the document at the current zoom.
+- Exports from one dialog. With **One-sided** chosen in Print setup it exports fronts. With **Two-sided** it exports either one file with fronts and backs alternating, for printers that duplex automatically, or separate fronts and backs files for flipping the stack by hand. Partially filled sheets are included. Larger exports can be split into files while keeping front/back pairs together. The dialog repeats the print instructions below.
 - Uses shared canvas and guide geometry for previews and PDFs. Cards trim to **63 × 88 mm**. PDF resolution is 600, 900 or 1200 DPI; higher output DPI cannot add detail to the source artwork.
 - Exports original images as ZIP and decklists as text. Long imports and exports show progress and support cancellation. Errors are visible instead of silently omitting cards.
-- Adapts to narrow screens and system light/dark appearance. Native buttons, dialogs and menus provide keyboard access.
+- Adapts to screen width: three columns on a wide screen, one side panel beside the sheet on a medium one, and one region at a time with a bottom bar on a phone. Follows the system light or dark appearance. Native buttons, dialogs and menus provide keyboard access.
 
 For duplex printing, use **100% / actual size**, with **long-edge flip in portrait** or **short-edge flip in landscape**. Test one sheet first: printer margins, registration and scaling vary. Bleed is extra artwork outside the 63 × 88 mm trim box.
 
-Under **Bleed artwork**, scanned cards use a **2.5 mm corner radius** and remove
+Under **Print setup → Advanced: artwork edges**, scanned cards use a **2.5 mm corner radius** and remove
 **0.25 mm** of the outer scan rim by default. The excluded perimeter is rebuilt
 from nearby clean artwork before reflection into the bleed. This keeps each
 corner continuous with its own edges and avoids copying rounded scan cutouts,
@@ -37,8 +42,8 @@ set **Image corner radius** to 3.2 mm (up to 3.5 mm); the physical cut radius
 stays 2.5 mm. Uniform white/black corner ink is preserved by default because it
 cannot reliably be distinguished from an identically colored scanner bed.
 These settings are defaults for regular fronts and backs, including zero-bleed
-output. Each card's artwork picker has overrides with a live front/back preview
-and a summary of detected edge treatments for mixed decks. Preview and PDF
+output. The **Bleed for this card** tab of each card's artwork picker has overrides
+with a live front/back preview and a summary of detected edge treatments for mixed decks. Preview and PDF
 repair run in a cancellable worker where supported, with a browser fallback.
 When at least two matching borders support shadows on the remaining edges, the preview
 suggests a stronger removal margin; you choose whether to apply it. A failed

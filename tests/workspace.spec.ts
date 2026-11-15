@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 const requireClient = createRequire(
   new URL("../client/package.json", import.meta.url)
@@ -8,9 +9,35 @@ const requireClient = createRequire(
 const { PDFDocument, PDFArray, PDFName, decodePDFRawStream } =
   requireClient("pdf-lib");
 const JSZip = requireClient("jszip");
+import {
+  addCardsDialog,
+  confirmDialog,
+  exportDialog,
+  openAddCards,
+  openAdvanced,
+  openExport,
+  setTwoSided,
+  showRegion,
+} from "./ui";
 const fixture = await readFile(
   new URL("../client/public/cardback.png", import.meta.url)
 );
+
+// The card search answers this name with no artwork, like Scryfall for a typo.
+const UNKNOWN_CARD = "Not A Real Card";
+// The card search answers this name with 24 printings, one per set.
+const MANY_PRINTS = "Many Prints";
+// Returned among Lightning Bolt's printings.
+const OTHER_CARD = "Emeritus of Conflict // Lightning Bolt";
+const SETS = [
+  { code: "c21", name: "Commander 2021", released_at: "2021-04-23" },
+  { code: "cmr", name: "Commander Legends", released_at: "2020-11-20" },
+  ...Array.from({ length: 24 }, (_, i) => ({
+    code: `m${String(i + 1).padStart(2, "0")}`,
+    name: `Many Prints Set ${i + 1}`,
+    released_at: `${2000 + i}-06-01`,
+  })),
+];
 
 async function mockCards(page: Page) {
   await page.route("https://cards.scryfall.io/**", (route) =>
@@ -23,12 +50,7 @@ async function mockCards(page: Page) {
       return route.fulfill({ contentType: "image/png", body: fixture });
     if (url.pathname.endsWith("/sets"))
       return route.fulfill({
-        json: {
-          data: [
-            { code: "c21", name: "Commander 2021" },
-            { code: "cmr", name: "Commander Legends" },
-          ],
-        },
+        json: { data: SETS },
       });
     if (url.pathname.endsWith("/autocomplete"))
       return route.fulfill({
@@ -40,13 +62,19 @@ async function mockCards(page: Page) {
         body.cardQueries || body.cardNames.map((name: string) => ({ name }));
       const cards = infos.flatMap(
         (q: { name: string; set?: string; number?: string }) => {
+          if (q.name === UNKNOWN_CARD)
+            return [{ name: q.name, query: q, imageUrls: [] }];
           return (
-            body.cardArt === "prints" ? ["c21", "cmr"] : [q.set || "c21"]
+            body.cardArt !== "prints"
+              ? [q.set || "c21"]
+              : q.name === MANY_PRINTS
+                ? SETS.slice(2).map((set) => set.code)
+                : ["c21", "cmr"]
           ).map((set) => {
             const front = `https://cards.scryfall.io/${encodeURIComponent(q.name)}-${set}.png`;
             const faces = [
               {
-                name: q.name,
+                name: q.name === "Day // Night" ? "Day" : q.name,
                 imageUrl: front,
                 thumbUrl: front.replace(".png", "-normal.jpg"),
                 faceIndex: 0,
@@ -70,19 +98,39 @@ async function mockCards(page: Page) {
           });
         }
       );
+      // Like Scryfall, a name search can return a different card that
+      // contains the name.
+      if (body.cardArt === "prints" && infos[0]?.name === "Lightning Bolt") {
+        const url = "https://cards.scryfall.io/emeritus-sos.png";
+        cards.push({
+          name: OTHER_CARD,
+          set: "cmr",
+          number: "7",
+          query: infos[0],
+          imageUrls: [url],
+          faces: [{ name: OTHER_CARD, imageUrl: url, faceIndex: 0 }],
+        });
+      }
       return route.fulfill({ json: cards });
     }
     return route.fulfill({ status: 404 });
   });
 }
 async function addDeck(page: Page, deck: string) {
+  await openAddCards(page);
   await page.getByLabel("Decklist", { exact: true }).fill(deck);
   await page.getByRole("button", { name: "Add to deck", exact: true }).click();
+  // A successful add closes the form: the dialog closes, or the empty
+  // Deck panel turns into the deck list.
+  await expect(page.getByLabel("Decklist", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 }
 async function saveDownload(page: Page, button: string) {
+  await openExport(page);
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: button, exact: true }).click();
+  await exportDialog(page)
+    .getByRole("button", { name: button, exact: true })
+    .click();
   const result = await download;
   const path = await result.path();
   return readFile(path!);
@@ -102,7 +150,9 @@ async function pdfInfo(bytes: Buffer) {
       .join("\n");
     let matrix = [1, 0, 0, 1, 0, 0];
     const stack: number[][] = [],
-      positions: number[][] = [];
+      positions: number[][] = [],
+      sources: string[] = [];
+    const xobjects = page.node.Resources()?.lookup(PDFName.of("XObject"));
     for (const command of text.split("\n").map((s: string) => s.trim())) {
       if (command === "q") stack.push([...matrix]);
       else if (command === "Q") matrix = stack.pop()!;
@@ -117,14 +167,22 @@ async function pdfInfo(bytes: Buffer) {
           a * E + c * F + e,
           b * E + d * F + f,
         ];
-      } else if (/^\/Image[^\s]* Do$/.test(command))
+      } else if (/^\/Image[^\s]* Do$/.test(command)) {
         positions.push([...matrix]);
+        const image = xobjects?.lookup(PDFName.of(command.slice(1, -3)));
+        sources.push(
+          createHash("sha1")
+            .update(image?.contents ?? "")
+            .digest("hex")
+        );
+      }
     }
     return {
       width: page.getWidth(),
       height: page.getHeight(),
       images: positions.length,
       positions,
+      sources,
       text,
     };
   });
@@ -138,19 +196,49 @@ test.beforeEach(async ({ page }) => {
   ).toBeVisible();
 });
 
+// Whether the Deck panel, the mat and Print setup are each shown.
+const visibleRegions = (page: Page) =>
+  Promise.all(
+    ["#deck-panel", "#preview-panel", "#print-panel"].map((id) =>
+      page.locator(id).isVisible()
+    )
+  );
+
+async function expectNoAxeViolations(page: Page, where: string) {
+  const axe = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+    .analyze();
+  expect(
+    axe.violations.map((v) => ({
+      id: v.id,
+      nodes: v.nodes.map((n) => n.target),
+    })),
+    where
+  ).toEqual([]);
+}
+
 test("responsive workspace and accessible empty states", async ({ page }) => {
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
-    for (const width of [1440, 768, 390, 320]) {
+    for (const width of [1440, 1024, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 950 });
-      const panels =
-        width < 1100 ? ["Add cards", "Preview", "Print settings"] : [null];
-      for (const panel of panels) {
-        if (panel)
-          await page
-            .getByRole("navigation")
-            .getByRole("button", { name: panel, exact: true })
-            .click();
+      const regions =
+        width < 760
+          ? (["Deck", "Sheets", "Print setup"] as const)
+          : width < 1180
+            ? (["Deck", "Print setup"] as const)
+            : [null];
+      for (const region of regions) {
+        if (region) await showRegion(page, region);
+        const [deck, mat, print] = await visibleRegions(page);
+        const where = `${scheme} at ${width}px, ${region ?? "all"}`;
+        if (width >= 1180)
+          expect([deck, mat, print], where).toEqual([true, true, true]);
+        else if (width >= 760) {
+          expect(mat, where).toBe(true);
+          expect(Number(deck) + Number(print), where).toBe(1);
+        } else
+          expect(Number(deck) + Number(mat) + Number(print), where).toBe(1);
         expect(
           await page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth
@@ -200,8 +288,8 @@ test("uploaded fronts and backs, settings, duplicate, and reset survive reload c
     mimeType: "image/png",
     buffer: fixture,
   });
-  await page.getByRole("button", { name: "Switch to landscape" }).click();
-  await page.getByText("Card backs & duplex", { exact: true }).click();
+  await page.getByRole("button", { name: "Landscape", exact: true }).click();
+  await setTwoSided(page, true);
   await page.getByLabel("Custom cardback", { exact: true }).setInputFiles({
     name: "global.png",
     mimeType: "image/png",
@@ -212,8 +300,8 @@ test("uploaded fronts and backs, settings, duplicate, and reset survive reload c
   ).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "Switch to portrait" })
-  ).toBeVisible();
+    page.getByRole("button", { name: "Landscape", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page
       .getByRole("button", {
@@ -239,27 +327,47 @@ test("uploaded fronts and backs, settings, duplicate, and reset survive reload c
       exact: true,
     })
   ).toHaveCount(2);
-  await page.getByText("Card backs & duplex", { exact: true }).click();
+  await setTwoSided(page, true);
   await expect(
     page.getByRole("img", { name: "Your custom cardback" })
   ).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
-  await page
-    .getByRole("button", { name: "Reset app data", exact: true })
-    .click();
+  const resetAppData = page.getByRole("button", {
+    name: "Reset app data",
+    exact: true,
+  });
+  await resetAppData.focus();
+  await page.keyboard.press("Enter");
+  const confirm = page.getByRole("dialog");
+  await expect(
+    confirm.getByRole("heading", {
+      name: "Delete everything saved in this browser?",
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    confirm.getByRole("button", { name: "Cancel", exact: true })
+  ).toBeFocused();
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(resetAppData).toBeFocused();
+  await expect(
+    page.getByRole("button", {
+      name: "My custom card, change artwork",
+      exact: true,
+    })
+  ).toHaveCount(2);
+  await resetAppData.click();
+  await confirmDialog(page, "Delete saved data");
   await expect(
     page.getByText("Saved workspace cleared.", { exact: true })
   ).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole("heading", {
-      name: "Your next deck starts here.",
-      exact: true,
-    })
+    page.getByRole("heading", { name: "No cards yet", exact: true })
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Switch to landscape" })
-  ).toBeVisible();
+    page.getByRole("button", { name: "Portrait", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
 });
 
 test("exact printings, custom-grid second page actions and artwork replacement", async ({
@@ -288,7 +396,7 @@ test("exact printings, custom-grid second page actions and artwork replacement",
   await expect(page.getByRole("dialog")).toBeVisible();
   await page
     .getByRole("button", {
-      name: "Choose Day // Night, cmr 123, face 2",
+      name: "Choose Day // Night, Night, Commander Legends, CMR #123, 2020",
       exact: true,
     })
     .click();
@@ -321,17 +429,20 @@ test("exact printings, custom-grid second page actions and artwork replacement",
   await page
     .getByRole("button", { name: "Day // Night, change artwork", exact: true })
     .click();
+  await page
+    .getByRole("button", { name: "Replace with a different card", exact: true })
+    .click();
   await page.getByLabel("Find a card", { exact: true }).fill("Fire // Ice");
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await expect(
     page.getByRole("button", {
-      name: "Choose Fire // Ice, cmr 123, face 1",
+      name: "Choose Fire // Ice, Commander Legends, CMR #123, 2020",
       exact: true,
     })
   ).toBeVisible();
   await page
     .getByRole("button", {
-      name: "Choose Fire // Ice, cmr 123, face 1",
+      name: "Choose Fire // Ice, Commander Legends, CMR #123, 2020",
       exact: true,
     })
     .click();
@@ -348,6 +459,7 @@ for (const count of [1, 2, 3, 10, 11])
     page,
   }) => {
     await addDeck(page, `${count} Sol Ring`);
+    await setTwoSided(page, true);
     const sheets = Math.ceil(count / 9);
     for (const back of [false, true]) {
       const pages = await pdfInfo(
@@ -379,8 +491,10 @@ for (const count of [1, 2, 3, 10, 11])
         });
       }
     }
-    await page.getByText("Card backs & duplex", { exact: true }).click();
-    await page.getByLabel("Collate fronts and backs in one PDF").check();
+    await openExport(page);
+    await page
+      .getByLabel("One file, fronts and backs alternating", { exact: true })
+      .check();
     const collated = await pdfInfo(
       await saveDownload(page, "Export collated PDF")
     );
@@ -407,8 +521,11 @@ test("MPC XML preserves slot order and backs and produces a collated PDF", async
   await expect(
     page.getByRole("button", { name: "First, change artwork" }).getByRole("img")
   ).toBeVisible();
-  await page.getByText("Card backs & duplex", { exact: true }).click();
-  await page.getByLabel("Collate fronts and backs in one PDF").check();
+  await setTwoSided(page, true);
+  await openExport(page);
+  await page
+    .getByLabel("One file, fronts and backs alternating", { exact: true })
+    .check();
   expect(
     await pdfInfo(await saveDownload(page, "Export collated PDF"))
   ).toHaveLength(2);
@@ -418,9 +535,8 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
   page,
 }) => {
   await addDeck(page, "1 Sol Ring\n1 Day // Night");
-  await page
-    .getByRole("button", { name: "Switch to landscape", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Landscape", exact: true }).click();
+  await openAddCards(page);
   await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
     name: "Custom.png",
     mimeType: "image/png",
@@ -431,13 +547,23 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
     mimeType: "image/png",
     buffer: fixture,
   });
-  await page.getByText("Card backs & duplex", { exact: true }).click();
+  await setTwoSided(page, true);
   await page.getByLabel("Custom cardback", { exact: true }).setInputFiles({
     name: "Global.png",
     mimeType: "image/png",
     buffer: fixture,
   });
-  await page.getByLabel("Collate fronts and backs in one PDF").check();
+  await openExport(page);
+  await page
+    .getByLabel("One file, fronts and backs alternating", { exact: true })
+    .check();
+  expect(
+    (
+      await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+        .analyze()
+    ).violations
+  ).toEqual([]);
   const pdf = await pdfInfo(await saveDownload(page, "Export collated PDF"));
   expect(pdf.map((p: any) => p.images)).toEqual([3, 3]);
   expect(pdf[0].width).toBeCloseTo(792);
@@ -451,7 +577,7 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(
     page.getByRole("button", {
-      name: "Choose Sol Ring, cmr 123, face 1",
+      name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
       exact: true,
     })
   ).toBeVisible();
@@ -485,10 +611,7 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
     fullPage: true,
   });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page
-    .getByRole("navigation")
-    .getByRole("button", { name: "Preview", exact: true })
-    .click();
+  await showRegion(page, "Sheets");
   await expect(page.locator(".card-control:visible")).toHaveCount(0);
   const mobileActions = page.getByLabel("Actions for Day // Night", {
     exact: true,
@@ -569,7 +692,8 @@ test("failed exports are visible and cancelling an import keeps the existing dec
   await page.route("**/api/cards/images/proxy?**", (route) =>
     route.fulfill({ status: 502, json: { error: "Image unavailable" } })
   );
-  await page
+  await openExport(page);
+  await exportDialog(page)
     .getByRole("button", { name: "Export fronts PDF", exact: true })
     .click();
   await expect(
@@ -588,6 +712,7 @@ test("failed exports are visible and cancelling an import keeps the existing dec
     await requestRelease;
     await route.abort();
   });
+  await openAddCards(page);
   await page.getByLabel("Decklist", { exact: true }).fill("1 Counterspell");
   await page.getByRole("button", { name: "Add to deck", exact: true }).click();
   await requestStarted;
@@ -595,7 +720,9 @@ test("failed exports are visible and cancelling an import keeps the existing dec
     .getByRole("button", { name: "Cancel import", exact: true })
     .click();
   release();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // The progress dialog closes; the Add cards dialog stays open with the list.
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await expect(addCardsDialog(page)).toBeVisible();
   await expect(
     page.getByRole("button", { name: /change artwork/ })
   ).toHaveCount(1);
@@ -649,8 +776,8 @@ test("legacy workspace migrates without losing print settings", async ({
     "A4"
   );
   await expect(
-    page.getByRole("button", { name: "Switch to portrait", exact: true })
-  ).toBeVisible();
+    page.getByRole("button", { name: "Landscape", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByLabel("Bleed (mm)", { exact: true })).toHaveValue("1");
   expect(
     await page.evaluate(() => localStorage.getItem("proxxied:cards:v6"))
@@ -672,10 +799,10 @@ test("a failed deck save stays visible when settings save successfully", async (
   await expect(
     page.getByRole("alert").filter({ hasText: "Changes could not be saved" })
   ).toBeVisible();
-  await page.getByRole("button", { name: "Switch to landscape" }).click();
+  await page.getByRole("button", { name: "Landscape", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Switch to portrait" })
-  ).toBeVisible();
+    page.getByRole("button", { name: "Landscape", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
   await expect(
     page.getByRole("alert").filter({ hasText: "Changes could not be saved" })
   ).toBeVisible();
@@ -685,14 +812,16 @@ test("collated batching keeps front and back pairs together", async ({
   page,
 }) => {
   await addDeck(page, "10 Sol Ring");
-  await page.getByText("Card backs & duplex", { exact: true }).click();
-  await page.getByLabel("Collate fronts and backs in one PDF").check();
-  await page.getByText("Export quality & files", { exact: true }).click();
+  await setTwoSided(page, true);
+  await openExport(page);
+  await page
+    .getByLabel("One file, fronts and backs alternating", { exact: true })
+    .check();
   await page.getByLabel("Split PDF into smaller files").check();
   await page.getByLabel("Pages per file", { exact: true }).fill("3");
   const downloads: import("@playwright/test").Download[] = [];
   page.on("download", (download) => downloads.push(download));
-  await page
+  await exportDialog(page)
     .getByRole("button", { name: "Export collated PDF", exact: true })
     .click();
   await expect.poll(() => downloads.length).toBe(2);
@@ -723,6 +852,7 @@ test("MPC default backs are retained and conflicting slots are rejected", async 
     "</fronts>",
     "<card><id>zyxwvutsrqpo</id><slots>0</slots></card></fronts>"
   );
+  await openAddCards(page);
   await page.getByLabel("MPCFill XML or text").setInputFiles({
     name: "bad.xml",
     mimeType: "text/xml",
@@ -848,7 +978,7 @@ test("shadow controls update actual front and custom-back preview and PDF pixels
     .getByRole("button", { name: "Rim test, change artwork", exact: true })
     .getByRole("img");
   await expect(preview).toBeVisible();
-  await page.getByText("Bleed artwork", { exact: true }).click();
+  await openAdvanced(page, "Artwork edges");
   const setInset = async (value: string) => {
     const old = await preview.getAttribute("src");
     await page.getByLabel("Shadow removal (mm)", { exact: true }).fill(value);
@@ -858,7 +988,7 @@ test("shadow controls update actual front and custom-back preview and PDF pixels
     await expect(preview).not.toHaveAttribute("src", old!);
   };
   await setInset("0");
-  await page.getByText("Card backs & duplex", { exact: true }).click();
+  await setTwoSided(page, true);
   await page
     .getByLabel("Custom cardback", { exact: true })
     .setInputFiles(image);
@@ -996,8 +1126,8 @@ test("scan cleanup removes opaque corners in preview and PDFs at every export DP
     });
   }
   await checkCorners((await preview.getAttribute("src"))!, 200);
-  await page.getByText("Export quality & files", { exact: true }).click();
   for (const dpi of [600, 900, 1200]) {
+    await openExport(page);
     await page
       .getByLabel("Resolution", { exact: true })
       .selectOption(String(dpi));
@@ -1006,7 +1136,7 @@ test("scan cleanup removes opaque corners in preview and PDFs at every export DP
       dpi
     );
   }
-  await page.getByText("Bleed artwork", { exact: true }).click();
+  await openAdvanced(page, "Artwork edges");
   const original = await preview.getAttribute("src");
   await page.getByLabel("Image edges", { exact: true }).selectOption("square");
   await expect(preview).not.toHaveAttribute("src", original!);
@@ -1020,7 +1150,7 @@ test("scan cleanup removes opaque corners in preview and PDFs at every export DP
     page.getByText("Saved in this browser", { exact: true })
   ).toBeVisible();
   await page.reload();
-  await page.getByText("Bleed artwork", { exact: true }).click();
+  await openAdvanced(page, "Artwork edges");
   await expect(
     page.getByLabel("Shadow removal (mm)", { exact: true })
   ).toHaveValue("0.4");
@@ -1092,7 +1222,7 @@ for (const name of [
       else expect(tone.max).toBeLessThanOrEqual(2);
     }
     if (name === "fireball") {
-      await page.getByText("Bleed artwork", { exact: true }).click();
+      await openAdvanced(page, "Artwork edges");
       const before = await preview.getAttribute("src");
       await page
         .getByLabel("Border bleed", { exact: true })
@@ -1104,7 +1234,7 @@ for (const name of [
       ])
         expect((await edgeTone(src)).max).toBeGreaterThan(80);
       await page.reload();
-      await page.getByText("Bleed artwork", { exact: true }).click();
+      await openAdvanced(page, "Artwork edges");
       await expect(
         page.getByLabel("Border bleed", { exact: true })
       ).toHaveValue("mirror");
@@ -1471,13 +1601,13 @@ test("corrupt legacy data can be explicitly cleared without trapping startup", a
   await expect(
     page.getByRole("button", { name: "Continue without saving", exact: true })
   ).toBeVisible();
-  page.once("dialog", (dialog) => dialog.accept());
   await page
     .getByRole("button", {
       name: "Delete saved data and start fresh",
       exact: true,
     })
     .click();
+  await confirmDialog(page, "Delete saved data");
   await expect(
     page.getByRole("heading", { name: "Add cards", exact: true })
   ).toBeVisible();
@@ -1497,14 +1627,10 @@ test("corrupt legacy data can be explicitly cleared without trapping startup", a
 test("grid preferences survive orientation and number fields support editing", async ({
   page,
 }) => {
-  await page
-    .getByRole("button", { name: "Switch to landscape", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Landscape", exact: true }).click();
   await expect(page.getByLabel("Columns", { exact: true })).toHaveValue("4");
   await expect(page.getByLabel("Rows", { exact: true })).toHaveValue("2");
-  await page
-    .getByRole("button", { name: "Switch to portrait", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Portrait", exact: true }).click();
   await expect(page.getByLabel("Rows", { exact: true })).toHaveValue("3");
   const columns = page.getByLabel("Columns", { exact: true });
   await columns.fill("");
@@ -1512,15 +1638,10 @@ test("grid preferences survive orientation and number fields support editing", a
   await columns.pressSequentially("2");
   await columns.press("Enter");
   await expect(columns).toHaveValue("2");
-  await page
-    .getByRole("button", { name: "Switch to landscape", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Switch to portrait", exact: true })
-    .click();
+  await page.getByRole("button", { name: "Landscape", exact: true }).click();
+  await page.getByRole("button", { name: "Portrait", exact: true }).click();
   await expect(columns).toHaveValue("2");
   await expect(page.getByLabel("Rows", { exact: true })).toHaveValue("3");
-  await page.getByText("Cutting guides", { exact: true }).click();
   const width = page.getByLabel("Width (px)", { exact: true });
   await width.fill("");
   await width.pressSequentially("1.2");
@@ -1548,7 +1669,7 @@ test("artwork picker uses direct normal thumbnails and keeps original PNG select
   page.on("request", (req) => requests.push(req.url()));
   await art.click();
   const choice = page.getByRole("button", {
-    name: "Choose Sol Ring, cmr 123, face 1",
+    name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
     exact: true,
   });
   await expect(choice.getByRole("img")).toHaveAttribute(
@@ -1689,13 +1810,11 @@ for (const [tone, shadow, suggested] of [
       },
       { tone, shadow }
     );
-    await page
-      .getByLabel("Upload card images", { exact: true })
-      .setInputFiles({
-        name: "Shadow.png",
-        mimeType: "image/png",
-        buffer: Buffer.from(source, "base64"),
-      });
+    await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+      name: "Shadow.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(source, "base64"),
+    });
     const card = page.getByRole("button", {
       name: "Shadow, change artwork",
       exact: true,
@@ -1733,3 +1852,1891 @@ for (const [tone, shadow, suggested] of [
     );
   });
 }
+
+async function savedUploads(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<{ fronts: number; backs: number }>((resolve, reject) => {
+        const open = indexedDB.open("proxxied-storage");
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const store = db
+            .transaction("zustand-store")
+            .objectStore("zustand-store");
+          const deck = store.get("proxxied:cards:v7");
+          const keys = store.getAllKeys();
+          store.transaction.oncomplete = () => {
+            db.close();
+            const stored = new Set(keys.result);
+            const count = (
+              files?: Record<string, { __proxxiedFile: string }>
+            ) =>
+              Object.values(files ?? {}).filter((file) =>
+                stored.has(file.__proxxiedFile)
+              ).length;
+            resolve({
+              fronts: count(deck.result?.state.uploadedFiles),
+              backs: count(deck.result?.state.uploadedBackFiles),
+            });
+          };
+        };
+      })
+  );
+}
+
+test("undo restores an uploaded card and its back across reload", async ({
+  page,
+}) => {
+  const logo = await readFile(
+    new URL("../client/public/logo.png", import.meta.url)
+  );
+  await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+    name: "Kept card.png",
+    mimeType: "image/png",
+    buffer: fixture,
+  });
+  const art = page.getByRole("button", {
+    name: "Kept card, change artwork",
+    exact: true,
+  });
+  await expect(art.getByRole("img")).toBeVisible();
+  await page.getByLabel("Back image for Kept card").setInputFiles({
+    name: "Kept back.png",
+    mimeType: "image/png",
+    buffer: logo,
+  });
+  await expect(page.getByText(/^Back image added\./)).toBeVisible();
+  await expect(
+    page.getByText("Saved in this browser", { exact: true })
+  ).toBeVisible();
+  await expect.poll(() => savedUploads(page)).toEqual({ fronts: 1, backs: 1 });
+  await setTwoSided(page, true);
+  const imageCounts = async () => [
+    (await pdfInfo(await saveDownload(page, "Export fronts PDF"))).map(
+      (p: any) => p.images
+    ),
+    (await pdfInfo(await saveDownload(page, "Export backs PDF"))).map(
+      (p: any) => p.images
+    ),
+  ];
+  const before = await imageCounts();
+  expect(before).toEqual([[1], [1]]);
+  for (const round of ["before reload", "after reload"]) {
+    await page.getByLabel("Actions for Kept card", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Remove card", exact: true })
+      .click();
+    await expect(art).toHaveCount(0);
+    await expect(
+      page.getByText("Removed Kept card.", { exact: true })
+    ).toBeVisible();
+    await expect
+      .poll(() => savedUploads(page), { message: round })
+      .toEqual({ fronts: 0, backs: 0 });
+    const notices = page.getByRole("region", { name: "Notifications" });
+    await notices.getByRole("button", { name: "Undo", exact: true }).click();
+    await expect(notices.getByRole("button", { name: "Undo" })).toHaveCount(0);
+    await expect(art.getByRole("img")).toBeVisible();
+    await expect(
+      page.getByText("Saved in this browser", { exact: true })
+    ).toBeVisible();
+    await expect
+      .poll(() => savedUploads(page), { message: round })
+      .toEqual({ fronts: 1, backs: 1 });
+    await page.reload();
+    await expect(art.getByRole("img")).toBeVisible();
+    expect(await imageCounts()).toEqual(before);
+  }
+});
+
+test("the undo on a removal notice undoes only that removal", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring\n1 Island");
+  const art = (name: string) =>
+    page.getByRole("button", { name: `${name}, change artwork`, exact: true });
+  await expect(art("Sol Ring").getByRole("img")).toBeVisible();
+  await expect(art("Island").getByRole("img")).toBeVisible();
+  for (const name of ["Sol Ring", "Island"]) {
+    await page.getByLabel(`Actions for ${name}`, { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Remove card", exact: true })
+      .click();
+    await expect(art(name)).toHaveCount(0);
+  }
+  const undo = page
+    .getByRole("region", { name: "Notifications" })
+    .getByRole("button", { name: "Undo", exact: true });
+  await expect(undo).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ has: page.getByRole("button", { name: "Undo", exact: true }) })
+  ).toContainText("Removed Island.");
+  await undo.click();
+  await expect(art("Island").getByRole("img")).toBeVisible();
+  await expect(art("Sol Ring")).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: remove Sol Ring.", { exact: true })
+  ).toBeVisible();
+  await expect(art("Sol Ring").getByRole("img")).toBeVisible();
+  await expect(art("Island").getByRole("img")).toBeVisible();
+});
+
+test("undo reverses a flip and an artwork change as whole actions", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring\n1 Day // Night");
+  const dayNight = page.getByRole("button", {
+    name: "Day // Night, change artwork",
+    exact: true,
+  });
+  const solRing = page.getByRole("button", {
+    name: "Sol Ring, change artwork",
+    exact: true,
+  });
+  await expect(dayNight.getByRole("img")).toBeVisible();
+  await expect(solRing.getByRole("img")).toBeVisible();
+  const requested: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/proxy?"))
+      requested.push(new URL(request.url()).searchParams.get("url") || "");
+  });
+  await page
+    .getByRole("button", { name: "Flip Day // Night", exact: true })
+    .click();
+  await expect
+    .poll(() => requested)
+    .toContain("https://cards.scryfall.io/night-c21.png");
+  await expect(dayNight.getByRole("img")).toBeVisible();
+  requested.length = 0;
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: flip Day // Night.", { exact: true })
+  ).toBeVisible();
+  await expect
+    .poll(() => requested)
+    .toContain("https://cards.scryfall.io/Day%20%2F%2F%20Night-c21.png");
+  await expect(dayNight.getByRole("img")).toBeVisible();
+  expect(requested).not.toContain("https://cards.scryfall.io/night-c21.png");
+
+  await solRing.click();
+  await page
+    .getByRole("button", {
+      name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(solRing.getByRole("img")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: change artwork for Sol Ring.", { exact: true })
+  ).toBeVisible();
+  await expect(solRing.getByRole("img")).toBeVisible();
+  requested.length = 0;
+  const zip = await JSZip.loadAsync(
+    await saveDownload(page, "Download original images · ZIP")
+  );
+  expect(Object.keys(zip.files)).toHaveLength(2);
+  expect(requested).toContain("https://cards.scryfall.io/Sol%20Ring-c21.png");
+  expect(requested).not.toContain(
+    "https://cards.scryfall.io/Sol%20Ring-cmr.png"
+  );
+});
+
+test("undo while a preview is still rendering leaves the restored card intact", async ({
+  page,
+}) => {
+  const logo = await readFile(
+    new URL("../client/public/logo.png", import.meta.url)
+  );
+  await addDeck(page, "1 Sol Ring");
+  const solRing = page.getByRole("button", {
+    name: "Sol Ring, change artwork",
+    exact: true,
+  });
+  const preview = solRing.getByRole("img");
+  await expect(preview).toBeVisible();
+  const originalPreview = await preview.getAttribute("src");
+  const isChosenPrinting = (url: string) =>
+    new URL(url).searchParams.get("url") ===
+    "https://cards.scryfall.io/Sol%20Ring-cmr.png";
+  let started!: () => void, release!: () => void, settled!: () => void;
+  const requestStarted = new Promise<void>((resolve) => (started = resolve));
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const requestSettled = new Promise<void>((resolve) => (settled = resolve));
+  for (const event of ["requestfinished", "requestfailed"] as const)
+    page.on(event, (request) => {
+      if (isChosenPrinting(request.url())) settled();
+    });
+  await page.route("**/api/cards/images/proxy?**", async (route) => {
+    if (!isChosenPrinting(route.request().url())) return route.fallback();
+    started();
+    await released;
+    await route
+      .fulfill({ contentType: "image/png", body: logo })
+      .catch(() => {});
+  });
+  await solRing.click();
+  await page
+    .getByRole("button", {
+      name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await requestStarted;
+  await expect(preview).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: change artwork for Sol Ring.", { exact: true })
+  ).toBeVisible();
+  await expect(preview).toHaveAttribute("src", originalPreview!);
+  release();
+  await requestSettled;
+  // Give a late render of the discarded printing time to land if it were kept.
+  await page.waitForTimeout(500);
+  await expect(preview).toHaveAttribute("src", originalPreview!);
+  await expect(page.getByRole("button", { name: /^Retry/ })).toHaveCount(0);
+  await solRing.click();
+  await expect(
+    page.getByRole("button", {
+      name: "Choose Sol Ring, Commander 2021, C21 #123, 2021",
+      exact: true,
+    })
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("button", {
+      name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
+      exact: true,
+    })
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
+test("the bottom bar never covers content on a phone", async ({ page }) => {
+  await addDeck(page, "20 Sol Ring\n2 Counterspell\n1 Day // Night");
+  const bar = page.getByRole("navigation", { name: "Workspace regions" });
+  for (const [width, height] of [
+    [390, 844],
+    [320, 640],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await expect(bar).toBeVisible();
+    const barTop = (await bar.boundingBox())!.y;
+    for (const [region, scroller] of [
+      ["Deck", '.side-panel[data-panel="deck"]'],
+      ["Sheets", ".sheet-scroller"],
+      ["Print setup", '.side-panel[data-panel="print"]'],
+    ] as const) {
+      await showRegion(page, region);
+      const bottom = await page.locator(scroller).evaluate(async (el) => {
+        el.scrollTop = el.scrollHeight;
+        await new Promise(requestAnimationFrame);
+        const focusable = [
+          ...el.querySelectorAll<HTMLElement>(
+            "button, a[href], input, select, textarea, summary"
+          ),
+        ].filter((e) => e.getClientRects().length > 0);
+        return focusable.at(-1)!.getBoundingClientRect().bottom;
+      });
+      expect(bottom, `${region} at ${width}px`).toBeLessThanOrEqual(barTop);
+    }
+    await openExport(page);
+    await exportDialog(page)
+      .getByRole("button", { name: "Copy list", exact: true })
+      .click();
+    const notice = page
+      .getByRole("region", { name: "Notifications" })
+      .locator(".notice")
+      .last();
+    await expect(notice).toBeVisible();
+    const box = (await notice.boundingBox())!;
+    expect(
+      box.y + box.height,
+      `notification at ${width}px`
+    ).toBeLessThanOrEqual(barTop);
+  }
+});
+
+test("controls stay clear of the screen's safe-area insets", async ({
+  page,
+}) => {
+  await addDeck(page, "20 Sol Ring\n2 Counterspell\n1 Day // Night");
+  // env(safe-area-inset-*) is 0 outside iOS, so stand in for an iPhone's insets.
+  await page.addStyleTag({
+    content:
+      ":root { --safe-top: 0px; --safe-left: 47px; --safe-right: 47px; --safe-bottom: 21px; }",
+  });
+  const inset = { left: 47, right: 47, bottom: 21 };
+  for (const [width, height] of [
+    [844, 390],
+    [1280, 800],
+    [390, 844],
+  ]) {
+    await page.setViewportSize({ width, height });
+    const nav = page.getByRole("navigation", { name: "Workspace regions" });
+    const floor = (await nav.isVisible())
+      ? (await nav.boundingBox())!.y
+      : height - inset.bottom;
+    for (const [region, scroller] of [
+      ["Deck", '.side-panel[data-panel="deck"]'],
+      ["Sheets", ".sheet-scroller"],
+      ["Print setup", '.side-panel[data-panel="print"]'],
+    ] as const) {
+      await showRegion(page, region);
+      const boxes = await page.locator(scroller).evaluate(async (el) => {
+        el.scrollTop = el.scrollHeight;
+        await new Promise(requestAnimationFrame);
+        const view = el.getBoundingClientRect();
+        const focusable = (root: ParentNode) =>
+          [
+            ...root.querySelectorAll<HTMLElement>(
+              "button, a[href], input, select, textarea, summary"
+            ),
+          ]
+            .filter((e) => e.getClientRects().length > 0)
+            .map((e) => e.getBoundingClientRect());
+        const inside = focusable(el);
+        return {
+          last: inside.at(-1)!.bottom,
+          shown: [
+            // The scroller clips what overflows it, so measure the visible part.
+            ...inside
+              .filter(
+                (r) =>
+                  r.bottom > view.top &&
+                  r.top < view.bottom &&
+                  r.right > view.left &&
+                  r.left < view.right
+              )
+              .map((r) => ({
+                left: Math.max(r.left, view.left),
+                right: Math.min(r.right, view.right),
+              })),
+            ...focusable(document.querySelector(".top-bar")!),
+            ...focusable(document.querySelector(".preview-toolbar") ?? el),
+          ].map((r) => ({ left: r.left, right: r.right })),
+        };
+      });
+      const where = `${region} at ${width}×${height}`;
+      expect(boxes.last, where).toBeLessThanOrEqual(floor);
+      for (const r of boxes.shown) {
+        expect(r.left, where).toBeGreaterThanOrEqual(inset.left);
+        expect(r.right, where).toBeLessThanOrEqual(width - inset.right);
+      }
+    }
+    await openExport(page);
+    await exportDialog(page)
+      .getByRole("button", { name: "Copy list", exact: true })
+      .click();
+    await page.keyboard.press("Escape");
+    const notice = page
+      .getByRole("region", { name: "Notifications" })
+      .locator(".notice")
+      .last();
+    await expect(notice).toBeVisible();
+    const box = (await notice.boundingBox())!;
+    const where = `notification at ${width}×${height}`;
+    expect(box.x, where).toBeGreaterThanOrEqual(inset.left);
+    expect(box.x + box.width, where).toBeLessThanOrEqual(width - inset.right);
+    expect(box.y + box.height, where).toBeLessThanOrEqual(floor);
+  }
+});
+
+test("the sides choice is saved and decides what export produces", async ({
+  page,
+}) => {
+  await addDeck(page, "10 Sol Ring");
+  const saved = page.getByText("Saved in this browser", { exact: true });
+  const slots = (pages: any[]) =>
+    pages.map((p) =>
+      p.positions.map((m: number[]) => [
+        Math.round(m[4] * 10) / 10,
+        Math.round(m[5] * 10) / 10,
+      ])
+    );
+  await setTwoSided(page, true);
+  await openExport(page);
+  await page
+    .getByLabel("One file, fronts and backs alternating", { exact: true })
+    .check();
+  await page.keyboard.press("Escape");
+  await expect(saved).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "Two-sided", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
+  const collated = await pdfInfo(
+    await saveDownload(page, "Export collated PDF")
+  );
+  expect(collated.map((p: any) => p.images)).toEqual([9, 9, 1, 1]);
+
+  await openExport(page);
+  await page.getByLabel("Two files, fronts and backs", { exact: true }).check();
+  const fronts = await pdfInfo(await saveDownload(page, "Export fronts PDF"));
+  const backs = await pdfInfo(await saveDownload(page, "Export backs PDF"));
+  expect(fronts.map((p: any) => p.images)).toEqual([9, 1]);
+  expect(backs.map((p: any) => p.images)).toEqual([9, 1]);
+  // The last card sits in the first column on its front and is mirrored to
+  // the last column on its back.
+  const pt = 72 / 25.4;
+  expect(fronts[1].positions[0][4]).toBeCloseTo(7.45 * pt);
+  expect(backs[1].positions[0][4]).toBeCloseTo((7.45 + 2 * 67) * pt);
+  expect(slots(collated)).toEqual(
+    slots([fronts[0], backs[0], fronts[1], backs[1]])
+  );
+
+  await openExport(page);
+  await page
+    .getByLabel("One file, fronts and backs alternating", { exact: true })
+    .check();
+  await page.keyboard.press("Escape");
+  await setTwoSided(page, false);
+  await expect(saved).toBeVisible();
+  await page.reload();
+  await expect(
+    page.getByRole("button", { name: "One-sided", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
+  await openExport(page);
+  await expect(
+    exportDialog(page).getByRole("button", {
+      name: "Export fronts PDF",
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    exportDialog(page).getByRole("button", {
+      name: /^Export (backs|collated) PDF$/,
+    })
+  ).toHaveCount(0);
+  const oneSided = await pdfInfo(await saveDownload(page, "Export fronts PDF"));
+  expect(oneSided.map((p: any) => p.images)).toEqual([9, 1]);
+  expect(slots(oneSided)).toEqual(slots(fronts));
+});
+
+test("dialogs return focus to their opener", async ({ page }) => {
+  await addDeck(page, "1 Sol Ring");
+  const opener = page.getByRole("button", { name: "Export", exact: true });
+  await opener.click();
+  await expect(exportDialog(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(exportDialog(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await opener.click();
+  await exportDialog(page)
+    .getByRole("button", { name: "Close export", exact: true })
+    .click();
+  await expect(exportDialog(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+const deckPanel = (page: Page) => page.locator("#deck-panel");
+const deckRow = (page: Page, name: string) =>
+  deckPanel(page)
+    .getByRole("listitem")
+    .filter({
+      has: page.getByRole("button", {
+        name: `Show ${name} on the sheet`,
+        exact: true,
+      }),
+    });
+async function deckMenu(page: Page, name: string, item: string) {
+  await deckPanel(page)
+    .getByLabel(`More actions for ${name}`, { exact: true })
+    .click();
+  await deckPanel(page)
+    .getByRole("button", { name: item, exact: true })
+    .click();
+}
+const artButton = (page: Page, name: string) =>
+  page.getByRole("button", { name: `${name}, change artwork`, exact: true });
+// The sheet's button for a card with no artwork.
+const findButton = (page: Page, name: string) =>
+  page.getByRole("button", { name: `${name}, find artwork`, exact: true });
+
+test("the deck list edits quantities, shows what needs artwork and undoes", async ({
+  page,
+}) => {
+  await addDeck(page, `2 Sol Ring\n1 ${UNKNOWN_CARD}\n1 Fire // Ice`);
+  await expect(
+    page.getByText(
+      `Added 4 cards. 1 card needs artwork: ${UNKNOWN_CARD}. Use Find artwork in the Deck panel.`,
+      { exact: true }
+    )
+  ).toBeVisible();
+  const deck = deckPanel(page);
+  const summary = deck.getByRole("status");
+  const rows = deck.getByRole("listitem");
+  await expect(summary).toHaveText("3 ready, 1 card needs artwork");
+  await expect(rows).toHaveCount(3);
+  await expect(deckRow(page, "Sol Ring")).toContainText("C21 #123");
+  await expect(deckRow(page, UNKNOWN_CARD)).toContainText("No artwork found");
+  await expect(
+    deck.getByText("4 of 1,000 cards", { exact: true })
+  ).toBeVisible();
+
+  const find = deck.getByRole("button", {
+    name: `Find artwork for ${UNKNOWN_CARD}`,
+  });
+  await find.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(find).toBeFocused();
+
+  await deck
+    .getByRole("button", { name: "Show only cards that need artwork" })
+    .click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText(UNKNOWN_CARD);
+  await deck.getByRole("button", { name: "Show all cards" }).click();
+  await expect(rows).toHaveCount(3);
+  await deck.getByLabel("Filter deck", { exact: true }).fill("ice");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("Fire // Ice");
+  await deck.getByLabel("Filter deck", { exact: true }).fill("");
+  await expect(rows).toHaveCount(3);
+
+  const show = deck.getByRole("button", {
+    name: "Show Sol Ring on the sheet",
+    exact: true,
+  });
+  await show.click();
+  await expect(deckRow(page, "Sol Ring")).toContainText("copy 1 of 2");
+  await show.click();
+  await expect(deckRow(page, "Sol Ring")).toContainText("copy 2 of 2");
+
+  await deck
+    .getByRole("button", { name: "Add one Sol Ring", exact: true })
+    .click();
+  await expect(
+    page.getByText("5 cards, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await expect(artButton(page, "Sol Ring")).toHaveCount(3);
+  await expect(deckRow(page, "Sol Ring").locator(".deck-qty")).toHaveText("3");
+  const removeOne = deck.getByRole("button", {
+    name: "Remove one Sol Ring",
+    exact: true,
+  });
+  await removeOne.click();
+  await removeOne.click();
+  await expect(artButton(page, "Sol Ring")).toHaveCount(1);
+  await expect(
+    deck.getByRole("button", { name: "Undo: remove Sol Ring", exact: true })
+  ).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(artButton(page, "Sol Ring")).toHaveCount(2);
+  await expect(deckRow(page, "Sol Ring").locator(".deck-qty")).toHaveText("2");
+
+  // A copy added later sits apart from the others; minus removes that one.
+  await addDeck(page, "1 Sol Ring");
+  await expect(deckRow(page, "Sol Ring").locator(".deck-qty")).toHaveText("3");
+  const sheetOrder = () =>
+    page
+      .getByRole("button", { name: /, (change|find) artwork$/ })
+      .evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+  expect((await sheetOrder()).at(-1)).toBe("Sol Ring, change artwork");
+  await removeOne.click();
+  expect(await sheetOrder()).toEqual([
+    "Sol Ring, change artwork",
+    "Sol Ring, change artwork",
+    `${UNKNOWN_CARD}, find artwork`,
+    "Fire // Ice, change artwork",
+  ]);
+
+  await page.waitForTimeout(9000);
+  await expect(summary).toHaveText("3 ready, 1 card needs artwork");
+
+  // On a phone, choosing a row takes you to the sheet it is on.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await showRegion(page, "Deck");
+  await deck
+    .getByRole("button", { name: "Show Fire // Ice on the sheet", exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole("navigation", { name: "Workspace regions" })
+      .getByRole("button", { name: "Sheets", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
+});
+
+test("undo stays reachable after the deck is emptied", async ({ page }) => {
+  const deck = deckPanel(page);
+  await expect(deck.getByRole("button", { name: /^Undo/ })).toHaveCount(0);
+
+  await addDeck(page, "2 Sol Ring\n1 Island");
+  await expect(
+    page.getByText("3 cards, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await deck.getByLabel("Deck actions", { exact: true }).click();
+  await page.getByRole("button", { name: "Clear deck", exact: true }).click();
+  await confirmDialog(page, "Clear deck");
+  await expect(page.getByLabel("Decklist", { exact: true })).toBeVisible();
+  const undoClear = deck.getByRole("button", {
+    name: "Undo: clear deck",
+    exact: true,
+  });
+  await expect(undoClear).toBeFocused();
+  const notice = page.getByText("Deck cleared.", { exact: false });
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveCount(0, { timeout: 12_000 });
+  await undoClear.click();
+  await expect(artButton(page, "Sol Ring")).toHaveCount(2);
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await expect(
+    page.getByText("3 cards, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await expect(
+    deck.getByRole("button", { name: "Undo: add 3 cards", exact: true })
+  ).toBeFocused();
+
+  await deckMenu(page, "Sol Ring", "Remove all 2 copies");
+  await deck
+    .getByRole("button", { name: "Remove one Island", exact: true })
+    .click();
+  await expect(page.getByLabel("Decklist", { exact: true })).toBeVisible();
+  const undoRemove = deck.getByRole("button", {
+    name: "Undo: remove Island",
+    exact: true,
+  });
+  await expect(undoRemove).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await expect(
+    page.getByText("1 card, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await expect(
+    deck.getByRole("button", {
+      name: "Undo: remove 2 copies of Sol Ring",
+      exact: true,
+    })
+  ).toBeFocused();
+
+  // History lasts for the session; with none left after an undo, focus goes
+  // to Add cards.
+  await expect(
+    page.getByText("Saved in this browser", { exact: true })
+  ).toBeVisible();
+  await page.reload();
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await deckMenu(page, "Island", "Remove card");
+  await expect(
+    deck.getByRole("button", { name: "Undo: remove Island", exact: true })
+  ).toBeFocused();
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await expect(
+    deck.getByRole("button", { name: "Add cards", exact: true })
+  ).toBeFocused();
+  await expect(
+    deck.getByRole("button", { name: "Undo", exact: true })
+  ).toBeDisabled();
+  await deckMenu(page, "Island", "Remove card");
+  await expect(page.getByLabel("Decklist", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Saved in this browser", { exact: true })
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Decklist", { exact: true })).toBeVisible();
+  await expect(deck.getByRole("button", { name: /^Undo/ })).toHaveCount(0);
+});
+
+test("every card action is reachable from the deck on A1 at fit page", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring\n1 Day // Night\n2 Island");
+  await openAddCards(page);
+  await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+    name: "Own art.png",
+    mimeType: "image/png",
+    buffer: fixture,
+  });
+  await expect(artButton(page, "Own art").getByRole("img")).toBeVisible();
+  await showRegion(page, "Print setup");
+  await page.getByLabel("Paper size", { exact: true }).selectOption("A1");
+  await showRegion(page, "Deck");
+
+  await deckMenu(page, "Sol Ring", "Change artwork");
+  await page
+    .getByRole("button", {
+      name: "Choose Sol Ring, Commander Legends, CMR #123, 2020",
+      exact: true,
+    })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(deckRow(page, "Sol Ring")).toContainText("CMR #123");
+
+  await deckMenu(page, "Day // Night", "Flip card");
+  await expect(deckRow(page, "Day // Night")).toContainText("showing Night");
+
+  const chooser = page.waitForEvent("filechooser");
+  await deckMenu(page, "Own art", "Upload back image");
+  await (
+    await chooser
+  ).setFiles({ name: "Own back.png", mimeType: "image/png", buffer: fixture });
+  await expect(deckRow(page, "Own art")).toContainText("own back");
+
+  const deck = deckPanel(page);
+  await deck
+    .getByRole("button", { name: "Add one Sol Ring", exact: true })
+    .click();
+  await expect(deckRow(page, "Sol Ring").locator(".deck-qty")).toHaveText("2");
+  await deck
+    .getByRole("button", { name: "Remove one Island", exact: true })
+    .click();
+  await expect(deckRow(page, "Island").locator(".deck-qty")).toHaveText("1");
+
+  const sheetOrder = () =>
+    page
+      .getByRole("button", { name: /, change artwork$/ })
+      .evaluateAll((els) =>
+        els.map((el) => el.getAttribute("aria-label")!.split(",")[0])
+      );
+  await deckMenu(page, "Sol Ring", "Move 2 copies to end");
+  await expect(deck.getByRole("listitem").last()).toContainText("Sol Ring");
+  await expect(
+    deck.getByLabel("More actions for Sol Ring", { exact: true })
+  ).toBeFocused();
+  expect(await sheetOrder()).toEqual([
+    "Day // Night",
+    "Island",
+    "Own art",
+    "Sol Ring",
+    "Sol Ring",
+  ]);
+
+  // One position at a time, with the copies a row holds moving together.
+  await deckMenu(page, "Own art", "Move earlier");
+  await expect(
+    deck.getByLabel("More actions for Own art", { exact: true })
+  ).toBeFocused();
+  expect(await sheetOrder()).toEqual([
+    "Day // Night",
+    "Own art",
+    "Island",
+    "Sol Ring",
+    "Sol Ring",
+  ]);
+  await deckMenu(page, "Sol Ring", "Move 2 copies earlier");
+  expect(await sheetOrder()).toEqual([
+    "Day // Night",
+    "Own art",
+    "Sol Ring",
+    "Sol Ring",
+    "Island",
+  ]);
+  await deck.getByLabel("More actions for Island", { exact: true }).click();
+  await expect(
+    deck.getByRole("button", { name: "Move later", exact: true })
+  ).toBeDisabled();
+  await page.keyboard.press("Escape");
+  // A one-card row passes one card, which leaves the Sol Ring copies apart.
+  await deckMenu(page, "Island", "Move earlier");
+  expect(await sheetOrder()).toEqual([
+    "Day // Night",
+    "Own art",
+    "Sol Ring",
+    "Island",
+    "Sol Ring",
+  ]);
+  // Moving the row first gathers its copies at the first one.
+  await deckMenu(page, "Sol Ring", "Move 2 copies later");
+  expect(await sheetOrder()).toEqual([
+    "Day // Night",
+    "Own art",
+    "Island",
+    "Sol Ring",
+    "Sol Ring",
+  ]);
+  await deck.getByLabel("More actions for Sol Ring", { exact: true }).click();
+  for (const item of [
+    "Change artwork",
+    "Move 2 copies earlier",
+    "Move 2 copies later",
+    "Move 2 copies to start",
+    "Move 2 copies to end",
+    "Remove all 2 copies",
+  ])
+    await expect(
+      deck.getByRole("button", { name: item, exact: true })
+    ).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await expect.poll(() => savedUploads(page)).toEqual({ fronts: 1, backs: 1 });
+  const requested: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/proxy?"))
+      requested.push(new URL(request.url()).searchParams.get("url") || "");
+  });
+  const pdf = await pdfInfo(await saveDownload(page, "Export fronts PDF"));
+  expect(pdf).toHaveLength(1);
+  expect(pdf[0].images).toBe(5);
+  expect(pdf[0].width).toBeCloseTo((594 * 72) / 25.4, 0);
+  expect(pdf[0].height).toBeCloseTo((841 * 72) / 25.4, 0);
+  expect(requested).toContain("https://cards.scryfall.io/Sol%20Ring-cmr.png");
+  expect(requested).not.toContain(
+    "https://cards.scryfall.io/Sol%20Ring-c21.png"
+  );
+  expect(requested).toContain("https://cards.scryfall.io/night-c21.png");
+});
+
+test("a card's sheet menu knows when another card is added after it", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring");
+  const menu = page.getByLabel("Actions for Sol Ring", { exact: true });
+  const later = page
+    .locator(".card-menu")
+    .getByRole("button", { name: "Move later", exact: true });
+  await menu.click();
+  await expect(later).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await addDeck(page, "1 Island");
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await showRegion(page, "Sheets");
+  await menu.click();
+  await expect(later).toBeEnabled();
+  await expect(
+    page
+      .locator(".card-menu")
+      .getByRole("button", { name: "Move to end", exact: true })
+  ).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await showRegion(page, "Deck");
+  await deckPanel(page)
+    .getByLabel("More actions for Sol Ring", { exact: true })
+    .click();
+  await expect(
+    deckPanel(page).getByRole("button", { name: "Move later", exact: true })
+  ).toBeEnabled();
+});
+
+test("confirmed resets leave focus on the page", async ({ page }) => {
+  await addDeck(page, "1 Sol Ring");
+  const focused = () =>
+    page.evaluate(() =>
+      document.activeElement === document.body
+        ? "body"
+        : (document.activeElement?.getAttribute("aria-label") ??
+          document.activeElement?.textContent ??
+          "")
+    );
+  await showRegion(page, "Print setup");
+  await page
+    .getByRole("button", { name: "Reset settings", exact: true })
+    .click();
+  await confirmDialog(page, "Reset settings");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(focused).not.toBe("body");
+
+  await page
+    .getByRole("button", { name: "Reset app data", exact: true })
+    .click();
+  await confirmDialog(page, "Delete saved data");
+  await expect(
+    page.getByText("Saved workspace cleared.", { exact: true })
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect.poll(focused).not.toBe("body");
+});
+
+async function fileTransfer(
+  page: Page,
+  file: { name: string; type: string; bytes: Buffer }
+) {
+  return page.evaluateHandle(
+    ({ name, type, base64 }) => {
+      const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], name, { type }));
+      return transfer;
+    },
+    { name: file.name, type: file.type, base64: file.bytes.toString("base64") }
+  );
+}
+
+test("dropped files are ignored while a dialog is open and rejected when unsupported", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring");
+  const target = page.getByText("Card images, trimmed to the card edge", {
+    exact: true,
+  });
+  const png = await fileTransfer(page, {
+    name: "Dropped art.png",
+    type: "image/png",
+    bytes: fixture,
+  });
+
+  await openExport(page);
+  await page.locator("body").dispatchEvent("dragenter", { dataTransfer: png });
+  await expect(target).toBeHidden();
+  await target.dispatchEvent("drop", { dataTransfer: png });
+  await page.waitForTimeout(500);
+  await expect(
+    page.getByText("1 card, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(exportDialog(page)).toHaveCount(0);
+
+  const pdf = await fileTransfer(page, {
+    name: "Deck.pdf",
+    type: "application/pdf",
+    bytes: Buffer.from("%PDF-1.4"),
+  });
+  await page.locator("body").dispatchEvent("dragenter", { dataTransfer: pdf });
+  await expect(target).toBeVisible();
+  await target.dispatchEvent("drop", { dataTransfer: pdf });
+  await expect(target).toBeHidden();
+  await expect(
+    page.getByRole("alert").filter({
+      hasText:
+        "Drop PNG, JPEG, WebP, GIF or AVIF images, or an MPCFill XML file.",
+    })
+  ).toBeVisible();
+  await expect(
+    page.getByText("1 card, 1 sheet", { exact: true })
+  ).toBeVisible();
+
+  await page.locator("body").dispatchEvent("dragenter", { dataTransfer: png });
+  await expect(target).toBeVisible();
+  await target.dispatchEvent("drop", { dataTransfer: png });
+  await expect(artButton(page, "Dropped art").getByRole("img")).toBeVisible();
+  await expect(
+    page.getByText("2 cards, 1 sheet", { exact: true })
+  ).toBeVisible();
+  await expect(deckRow(page, "Dropped art")).toContainText("Your image");
+});
+
+test("the Add cards dialog returns focus to its opener", async ({ page }) => {
+  await addDeck(page, "1 Sol Ring");
+  const opener = deckPanel(page).getByRole("button", {
+    name: "Add cards",
+    exact: true,
+  });
+  await opener.click();
+  await expect(addCardsDialog(page)).toBeVisible();
+  await expect(page.getByLabel("Decklist", { exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(addCardsDialog(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  await opener.click();
+  await page.getByLabel("Decklist", { exact: true }).fill("1 Island");
+  await page.getByRole("button", { name: "Add to deck", exact: true }).click();
+  await expect(addCardsDialog(page)).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  await expect(
+    page.getByText("2 cards, 1 sheet", { exact: true })
+  ).toBeVisible();
+
+  await deckPanel(page).getByLabel("Deck actions", { exact: true }).click();
+  await page.getByRole("button", { name: "Clear deck", exact: true }).click();
+  await confirmDialog(page, "Clear deck");
+  await expect(
+    deckPanel(page).getByRole("button", {
+      name: "Undo: clear deck",
+      exact: true,
+    })
+  ).toBeFocused();
+  await page
+    .getByRole("region", { name: "Notifications" })
+    .getByRole("button", { name: "Undo", exact: true })
+    .click();
+  await expect(artButton(page, "Island")).toHaveCount(1);
+  await expect(artButton(page, "Sol Ring")).toHaveCount(1);
+});
+
+test("the deck panel and Add cards dialog pass axe at every width", async ({
+  page,
+}) => {
+  await addDeck(page, `2 Sol Ring\n1 ${UNKNOWN_CARD}\n1 Day // Night`);
+  const scan = async (selector: string, where: string) => {
+    const axe = await new AxeBuilder({ page })
+      .include(selector)
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+      .analyze();
+    expect(
+      axe.violations.map((v) => ({
+        id: v.id,
+        nodes: v.nodes.map((n) => n.target),
+      })),
+      where
+    ).toEqual([]);
+  };
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    for (const width of [1440, 1024, 390, 320]) {
+      const where = `${scheme} at ${width}px`;
+      await page.setViewportSize({ width, height: 900 });
+      await showRegion(page, "Deck");
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth
+        ),
+        where
+      ).toBe(true);
+      await scan("#deck-panel", where);
+      await deckPanel(page)
+        .getByLabel(`More actions for Day // Night`, { exact: true })
+        .click();
+      await scan("#deck-panel", `${where}, row menu open`);
+      await page.keyboard.press("Escape");
+      await openAddCards(page);
+      await scan(".add-cards-dialog", `${where}, Add cards dialog`);
+      await page.keyboard.press("Escape");
+      await expect(addCardsDialog(page)).toHaveCount(0);
+    }
+  }
+});
+
+test("a populated deck and every dialog pass axe in both themes at every width", async ({
+  page,
+}) => {
+  // The empty deck is scanned at the same widths by the responsive test.
+  test.setTimeout(300_000);
+  await addDeck(page, `2 Sol Ring\n1 ${UNKNOWN_CARD}\n1 Day // Night`);
+  await expect(
+    artButton(page, "Sol Ring").first().getByRole("img")
+  ).toBeVisible();
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+    for (const [width, height] of [
+      [1440, 900],
+      [768, 900],
+      [390, 844],
+      [320, 640],
+    ]) {
+      const at = `${scheme} at ${width}px`;
+      await page.setViewportSize({ width, height });
+      const regions =
+        width < 760
+          ? (["Deck", "Sheets", "Print setup"] as const)
+          : width < 1180
+            ? (["Deck", "Print setup"] as const)
+            : [null];
+      for (const region of regions) {
+        if (region) await showRegion(page, region);
+        await expectNoAxeViolations(page, `deck, ${at}, ${region ?? "all"}`);
+      }
+
+      await openExport(page);
+      await expectNoAxeViolations(page, `export dialog, ${at}`);
+      await page.keyboard.press("Escape");
+      await expect(exportDialog(page)).toHaveCount(0);
+
+      await showRegion(page, "Sheets");
+      await artButton(page, "Sol Ring").first().click();
+      await expect(choice(page, "Sol Ring", "cmr")).toBeVisible();
+      for (const tab of ["Printings", "Bleed for this card"]) {
+        const button = picker(page).getByRole("button", {
+          name: tab,
+          exact: true,
+        });
+        await button.click();
+        await expect(button).toHaveAttribute("aria-pressed", "true");
+        await expectNoAxeViolations(page, `picker, ${tab}, ${at}`);
+      }
+      await page.keyboard.press("Escape");
+      await expect(picker(page)).toHaveCount(0);
+
+      await showRegion(page, "Deck");
+      await deckPanel(page).getByLabel("Deck actions", { exact: true }).click();
+      await page
+        .getByRole("button", { name: "Clear deck", exact: true })
+        .click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expectNoAxeViolations(page, `confirm dialog, ${at}`);
+      await confirmDialog(page, "Cancel");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    }
+  }
+});
+
+const TEST_DECK = "20 Sol Ring\n2 Counterspell\n1 Day // Night";
+
+// --sheet-scale against the first sheet's rendered width over its width at 100%.
+async function sheetMeasure(page: Page) {
+  return page.evaluate(() => {
+    const scroller = document.querySelector<HTMLElement>(".sheet-scroller")!;
+    const sheet = document.querySelector<HTMLElement>(".proxy-page")!;
+    const box = sheet.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    return {
+      scale: Number(
+        getComputedStyle(scroller).getPropertyValue("--sheet-scale")
+      ),
+      rendered: box.width / ((parseFloat(sheet.style.width) * 96) / 25.4),
+      width: box.width,
+      inside:
+        box.left >= view.left &&
+        box.top >= view.top &&
+        box.right <= view.right &&
+        box.bottom <= view.bottom,
+    };
+  });
+}
+async function expectHonestScale(page: Page, where: string) {
+  await expect
+    .poll(async () => {
+      const { scale, rendered } = await sheetMeasure(page);
+      return Math.abs(scale - rendered);
+    }, where)
+    .toBeLessThanOrEqual(0.01);
+}
+
+test("the mat shows a whole sheet at document scale", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await addDeck(page, TEST_DECK);
+  const zoom = page.getByLabel("Zoom", { exact: true });
+  const shown = zoom.locator("option:checked");
+  await expect(shown).toHaveText("Fit page");
+  await expect.poll(async () => (await sheetMeasure(page)).inside).toBe(true);
+  await expectHonestScale(page, "fit page");
+  await expect(page.getByText("Sheet 1 of 3", { exact: true })).toBeVisible();
+
+  await zoom.selectOption({ label: "Fit width" });
+  await expectHonestScale(page, "fit width");
+  await zoom.selectOption({ label: "100%" });
+  await expect
+    .poll(async () => (await sheetMeasure(page)).width)
+    .toBeCloseTo(816, 0);
+  await expectHonestScale(page, "100%");
+  await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+  await expect(shown).toHaveText("75%");
+  await expectHonestScale(page, "75%");
+
+  await page.getByRole("button", { name: "Next sheet", exact: true }).click();
+  await expect(page.getByText("Sheet 2 of 3", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "Previous sheet", exact: true })
+    .click();
+  await expect(page.getByText("Sheet 1 of 3", { exact: true })).toBeVisible();
+
+  // The last card is on sheet 3; showing it from the deck scrolls the mat.
+  const last = page
+    .locator(".sortable-card")
+    .filter({ has: artButton(page, "Day // Night") });
+  await expect(last).not.toBeInViewport();
+  await deckPanel(page)
+    .getByRole("button", {
+      name: "Show Day // Night on the sheet",
+      exact: true,
+    })
+    .click();
+  await expect(last).toBeInViewport();
+  await expect(last).toHaveAttribute("data-highlighted", "true");
+  await expect(page.getByText("Sheet 3 of 3", { exact: true })).toBeVisible();
+  await expect(last).not.toHaveAttribute("data-highlighted", { timeout: 4000 });
+
+  await zoom.selectOption({ label: "Fit page" });
+  for (const [width, height] of [
+    [1440, 900],
+    [1024, 768],
+    [390, 844],
+    [320, 640],
+  ]) {
+    await page.setViewportSize({ width, height });
+    for (const [paper, orientation] of [
+      ["Letter", "Portrait"],
+      ["Letter", "Landscape"],
+      ["A1", "Portrait"],
+    ]) {
+      await showRegion(page, "Print setup");
+      await page.getByLabel("Paper size", { exact: true }).selectOption(paper);
+      await page
+        .getByRole("button", { name: orientation, exact: true })
+        .click();
+      await showRegion(page, "Sheets");
+      await page.locator(".sheet-scroller").evaluate((el) => el.scrollTo(0, 0));
+      const where = `${paper} ${orientation} at ${width}×${height}`;
+      await expect
+        .poll(async () => (await sheetMeasure(page)).inside, where)
+        .toBe(true);
+      await expectHonestScale(page, where);
+    }
+  }
+});
+
+test("an unknown card asks for artwork and never offers retry", async ({
+  page,
+}) => {
+  const imageRequests: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (
+      request.resourceType() === "image" ||
+      /\/api\/cards\/images\/(proxy|front)/.test(url)
+    )
+      imageRequests.push(decodeURIComponent(url));
+  });
+  await addDeck(page, `1 Sol Ring\n1 ${UNKNOWN_CARD}`);
+  await expect(artButton(page, "Sol Ring").getByRole("img")).toBeVisible();
+  const find = findButton(page, UNKNOWN_CARD);
+  const card = page.locator(".sortable-card").filter({ has: find });
+  await expect(card).toContainText("No artwork found");
+  await expect(card.getByText("Find artwork", { exact: true })).toBeVisible();
+  await expect(artButton(page, UNKNOWN_CARD)).toHaveCount(0);
+  await expect(find).toHaveAccessibleDescription("No artwork found");
+  await expect(page.getByRole("button", { name: /Retry/ })).toHaveCount(0);
+  await card.getByText("Find artwork", { exact: true }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("button", { name: /Retry/ })).toHaveCount(0);
+  expect(imageRequests.length).toBeGreaterThan(0);
+  expect(
+    imageRequests.filter(
+      (url) => url.includes(UNKNOWN_CARD) || /[?&]url=(&|$)/.test(url)
+    )
+  ).toEqual([]);
+});
+
+test("controls stay off the artwork until hover or focus", async ({ page }) => {
+  // The night face stands out in both PDFs, so its place can be followed.
+  const logo = await readFile(
+    new URL("../client/public/logo.png", import.meta.url)
+  );
+  await page.route("**/api/cards/images/proxy?**", (route) =>
+    /night/i.test(new URL(route.request().url()).searchParams.get("url") ?? "")
+      ? route.fulfill({ contentType: "image/png", body: logo })
+      : route.fallback()
+  );
+  await addDeck(page, "1 Sol Ring\n1 Counterspell\n1 Day // Night");
+  const cards = page.locator(".sortable-card");
+  const handle = (index: number) => cards.nth(index).locator(".drag-handle");
+  const opacity = (index: number) =>
+    handle(index).evaluate((el) => getComputedStyle(el).opacity);
+  await page.mouse.move(1, 1);
+  await expect.poll(() => opacity(0)).toBe("0");
+  await cards.nth(0).hover();
+  await expect.poll(() => opacity(0)).toBe("1");
+  await page.mouse.move(1, 1);
+  await expect.poll(() => opacity(0)).toBe("0");
+  await artButton(page, "Counterspell").focus();
+  await page.keyboard.press("Tab");
+  await expect(handle(1)).toBeFocused();
+  await expect.poll(() => opacity(1)).toBe("1");
+  await expect.poll(() => opacity(0)).toBe("0");
+  await artButton(page, "Counterspell").focus();
+
+  await handle(2).hover();
+  const from = (await handle(2).boundingBox())!;
+  const to = (await cards.nth(0).boundingBox())!;
+  await page.mouse.down();
+  await page.mouse.move(from.x + 4, from.y + 14, { steps: 4 });
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+    steps: 12,
+  });
+  await page.mouse.up();
+  await expect
+    .poll(() =>
+      page
+        .getByRole("button", { name: /, change artwork$/ })
+        .evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")))
+    )
+    .toEqual([
+      "Day // Night, change artwork",
+      "Sol Ring, change artwork",
+      "Counterspell, change artwork",
+    ]);
+
+  // dnd-kit swallows clicks for 50 ms after a drop.
+  await page.waitForTimeout(100);
+  await setTwoSided(page, true);
+  const [fronts] = await pdfInfo(await saveDownload(page, "Export fronts PDF"));
+  const [backs] = await pdfInfo(await saveDownload(page, "Export backs PDF"));
+  const odd = (sources: string[]) =>
+    sources.findIndex((s) => sources.filter((t) => t === s).length === 1);
+  expect(fronts.images).toBe(3);
+  expect(backs.images).toBe(3);
+  const front = fronts.positions[odd(fronts.sources)];
+  const back = backs.positions[odd(backs.sources)];
+  const pt = 72 / 25.4;
+  // Day // Night is first on the sheet; its back sits mirrored behind it.
+  expect(front[4]).toBeCloseTo(7.45 * pt);
+  expect(back[4]).toBeCloseTo(fronts.width - front[4] - front[0]);
+  expect(back[5]).toBeCloseTo(front[5]);
+});
+
+const showOnSheet = (page: Page, name: string) =>
+  deckPanel(page).getByRole("button", {
+    name: `Show ${name} on the sheet`,
+    exact: true,
+  });
+const matCard = (page: Page, name: string) =>
+  page.locator(".sortable-card").filter({ has: artButton(page, name) });
+
+test("selecting a deck row again steps through its copies", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await addDeck(page, "4 Counterspell\n2 Sol Ring\n1 Day // Night");
+  const counterspell = deckRow(page, "Counterspell");
+  const solRing = deckRow(page, "Sol Ring");
+  const copyText = /copy \d+ of \d+/;
+
+  await showOnSheet(page, "Counterspell").click();
+  await expect(counterspell).toContainText("copy 1 of 4");
+  // Past the 1.6 s highlight.
+  await page.waitForTimeout(2000);
+  await showOnSheet(page, "Counterspell").click();
+  await expect(counterspell).toContainText("copy 2 of 4");
+
+  await matCard(page, "Day // Night").hover();
+  await expect(deckRow(page, "Day // Night")).toHaveAttribute(
+    "data-active",
+    "true"
+  );
+  await page.mouse.move(1, 1);
+  await showOnSheet(page, "Counterspell").click();
+  await expect(counterspell).toContainText("copy 3 of 4");
+
+  await matCard(page, "Sol Ring").first().hover();
+  await expect(solRing).toHaveAttribute("data-active", "true");
+  await expect(solRing).not.toContainText(copyText);
+  await expect(counterspell).toContainText("copy 3 of 4");
+
+  await showOnSheet(page, "Sol Ring").click();
+  await expect(solRing).toContainText("copy 1 of 2");
+  await expect(counterspell).not.toContainText(copyText);
+  await showOnSheet(page, "Sol Ring").click();
+  await expect(solRing).toContainText("copy 2 of 2");
+
+  // Removes the copy last shown; no row is left pointing at it.
+  await deckPanel(page)
+    .getByRole("button", { name: "Remove one Sol Ring", exact: true })
+    .click();
+  await expect(deckPanel(page)).not.toContainText(copyText);
+});
+
+test("showing a card from the deck on a phone brings it into view", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await addDeck(page, TEST_DECK);
+  await showRegion(page, "Deck");
+  await showOnSheet(page, "Day // Night").click();
+  const scroller = page.locator(".sheet-scroller");
+  await expect(scroller).toBeVisible();
+  const card = matCard(page, "Day // Night");
+  const inside = async () => {
+    const box = await card.boundingBox();
+    const view = await scroller.boundingBox();
+    return (
+      !!box &&
+      !!view &&
+      box.y >= view.y &&
+      box.y + box.height <= view.y + view.height &&
+      box.x >= view.x &&
+      box.x + box.width <= view.x + view.width
+    );
+  };
+  await expect.poll(inside, { timeout: 3000 }).toBe(true);
+  // Still there once any smooth scroll and late layout have settled.
+  await page.waitForTimeout(1000);
+  expect(await inside()).toBe(true);
+});
+
+test("a one-sheet deck at fit page does not scroll", async ({ page }) => {
+  await addDeck(page, "1 Sol Ring");
+  const scroller = page.locator(".sheet-scroller");
+  for (const [width, height] of [
+    [1440, 900],
+    [1024, 768],
+    [390, 844],
+    [320, 640],
+  ]) {
+    await page.setViewportSize({ width, height });
+    for (const orientation of ["Portrait", "Landscape"]) {
+      await showRegion(page, "Print setup");
+      await page
+        .getByLabel("Paper size", { exact: true })
+        .selectOption("Letter");
+      await page
+        .getByRole("button", { name: orientation, exact: true })
+        .click();
+      await showRegion(page, "Sheets");
+      const where = `Letter ${orientation} at ${width}×${height}`;
+      await expectHonestScale(page, where);
+      await expect
+        .poll(
+          () => scroller.evaluate((el) => el.scrollHeight - el.clientHeight),
+          where
+        )
+        .toBeLessThanOrEqual(0);
+    }
+  }
+  // A larger browser font makes the sheet label taller.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await showRegion(page, "Print setup");
+  await page.getByRole("button", { name: "Portrait", exact: true }).click();
+  await page.evaluate(() => (document.documentElement.style.fontSize = "24px"));
+  // Let the resize observers and re-render settle; a mid-way frame can fit.
+  await page.waitForTimeout(500);
+  expect(
+    await scroller.evaluate((el) => el.scrollHeight - el.clientHeight),
+    "Letter Portrait with a 24 px root font"
+  ).toBeLessThanOrEqual(0);
+});
+
+const picker = (page: Page) => page.getByRole("dialog", { name: /.+/ });
+const choice = (page: Page, name: string, set: "c21" | "cmr") =>
+  page.getByRole("button", {
+    name:
+      set === "c21"
+        ? `Choose ${name}, Commander 2021, C21 #123, 2021`
+        : `Choose ${name}, Commander Legends, CMR #123, 2020`,
+    exact: true,
+  });
+async function zipRequests(page: Page) {
+  for (const art of await page
+    .getByRole("button", { name: /, change artwork$/ })
+    .all())
+    await expect(art.getByRole("img")).toBeVisible();
+  const requested: string[] = [];
+  const listener = (request: { url(): string }) => {
+    if (request.url().includes("/proxy?"))
+      requested.push(new URL(request.url()).searchParams.get("url") || "");
+  };
+  page.on("request", listener);
+  const zip = await JSZip.loadAsync(
+    await saveDownload(page, "Download original images · ZIP")
+  );
+  page.off("request", listener);
+  return { files: Object.keys(zip.files).length, requested: requested.sort() };
+}
+
+test("the picker labels printings by set and shows many at once", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // Several copies, so the scope options take their room too.
+  await addDeck(page, `4 ${MANY_PRINTS}`);
+  await artButton(page, MANY_PRINTS).first().click();
+  await expect(
+    page
+      .getByRole("group", { name: "Change" })
+      .getByRole("radio", { name: "The 4 copies in this row", exact: true })
+  ).toBeVisible();
+  const choices = picker(page).getByRole("button", { name: /^Choose / });
+  await expect(choices).toHaveCount(24);
+  const visible = await page.locator(".artwork-body").evaluate((body) => {
+    const box = body.getBoundingClientRect();
+    return [...body.querySelectorAll(".artwork-choice")]
+      .filter((el) => {
+        const r = el.getBoundingClientRect();
+        return (
+          r.top >= box.top &&
+          r.bottom <= box.bottom &&
+          r.left >= box.left &&
+          r.right <= box.right
+        );
+      })
+      .map((el) => ({
+        name: el.getAttribute("aria-label"),
+        text: (el as HTMLElement).innerText,
+      }));
+  });
+  expect(visible.length).toBeGreaterThanOrEqual(18);
+  for (const { name, text } of visible) {
+    const [, set, code, year] = name!.match(
+      /^Choose Many Prints, (Many Prints Set \d+), (M\d\d) #123, (\d{4})$/
+    )!;
+    expect(text).toContain(set);
+    expect(text).toContain(`${code} #123, ${year}`);
+  }
+  await expect(
+    picker(page).getByRole("heading", {
+      name: `Printings of ${MANY_PRINTS}`,
+      exact: true,
+    })
+  ).toBeVisible();
+  await page.getByLabel("Filter by set name or code").fill("Set 12");
+  await expect(choices).toHaveCount(1);
+  await expect(picker(page).getByRole("status").first()).toHaveText(
+    "1 of 24 printings"
+  );
+});
+
+test("a printing that is a different card says so", async ({ page }) => {
+  await addDeck(page, "1 Lightning Bolt\n1 Day // Night");
+  await artButton(page, "Lightning Bolt").click();
+  const other = picker(page).getByRole("button", {
+    name: `Choose ${OTHER_CARD}, Commander Legends, CMR #7, 2020`,
+    exact: true,
+  });
+  await expect(other).toBeVisible();
+  await expect(other).toContainText(OTHER_CARD);
+  await expect(choice(page, "Lightning Bolt", "c21")).not.toContainText(
+    OTHER_CARD
+  );
+  await expect(
+    picker(page).getByText(
+      "Some printings are a different card and will rename this one.",
+      { exact: true }
+    )
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(picker(page)).toHaveCount(0);
+
+  // The two faces of a double-faced printing name their face.
+  await artButton(page, "Day // Night").click();
+  for (const face of ["Day", "Night"]) {
+    const button = picker(page).getByRole("button", {
+      name: `Choose Day // Night, ${face}, Commander Legends, CMR #123, 2020`,
+      exact: true,
+    });
+    await expect(button.getByText(face, { exact: true })).toBeVisible();
+  }
+  await expect(
+    picker(page).getByText(/Some printings are a different card/)
+  ).toHaveCount(0);
+});
+
+test("replacing a card is separate from choosing a printing", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring");
+  await artButton(page, "Sol Ring").click();
+  await expect(
+    picker(page).getByRole("heading", {
+      name: "Printings of Sol Ring",
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(choice(page, "Sol Ring", "cmr")).toBeVisible();
+  await expect(page.getByLabel("Find a card", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Choosing one replaces/)).toHaveCount(0);
+  const replace = page.getByRole("button", {
+    name: "Replace with a different card",
+    exact: true,
+  });
+  await expect(replace).toHaveAttribute("aria-expanded", "false");
+  await replace.click();
+  await expect(replace).toHaveAttribute("aria-expanded", "true");
+  await page.getByLabel("Find a card", { exact: true }).fill("Fire // Ice");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(
+    picker(page).getByRole("heading", {
+      name: "Printings of Fire // Ice",
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(
+    page.getByText("Choosing one replaces Sol Ring.", { exact: true })
+  ).toBeVisible();
+  await choice(page, "Fire // Ice", "cmr").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(artButton(page, "Fire // Ice").getByRole("img")).toBeVisible();
+  await expect(artButton(page, "Sol Ring")).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: replace Sol Ring with Fire // Ice.", {
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(artButton(page, "Sol Ring")).toHaveCount(1);
+});
+
+test("a card with no artwork opens the picker with the search showing", async ({
+  page,
+}) => {
+  await addDeck(page, `1 ${UNKNOWN_CARD}`);
+  await findButton(page, UNKNOWN_CARD).click();
+  const search = page.getByLabel("Find a card", { exact: true });
+  await expect(search).toBeVisible();
+  await expect(search).toBeFocused();
+  await expect(
+    page.getByText(`No printings found for “${UNKNOWN_CARD}”.`, {
+      exact: false,
+    })
+  ).toBeVisible();
+  await search.fill("Sol Ring");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await expect(
+    page.getByText(`Choosing one replaces ${UNKNOWN_CARD}.`, { exact: true })
+  ).toBeVisible();
+  await choice(page, "Sol Ring", "c21").click();
+  await expect(artButton(page, "Sol Ring").getByRole("img")).toBeVisible();
+});
+
+test("each scope changes exactly the cards it names", async ({ page }) => {
+  await addDeck(page, "3 Sol Ring");
+  await openAddCards(page);
+  await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+    name: "Sol Ring.png",
+    mimeType: "image/png",
+    buffer: fixture,
+  });
+  const cards = artButton(page, "Sol Ring");
+  await expect(cards).toHaveCount(4);
+  for (const card of await cards.all())
+    await expect(card.getByRole("img")).toBeVisible();
+  await showRegion(page, "Deck");
+  const rows = deckPanel(page).getByRole("listitem");
+  const rowTexts = () =>
+    rows.evaluateAll((items) =>
+      items.map((item) =>
+        [
+          item.querySelector(".deck-qty")?.textContent,
+          item.querySelector(".deck-row-meta")?.textContent,
+        ].join(" ")
+      )
+    );
+  const C21 = "https://cards.scryfall.io/Sol%20Ring-c21.png";
+  const CMR = "https://cards.scryfall.io/Sol%20Ring-cmr.png";
+  expect(await rowTexts()).toEqual(["3 C21 #123", "1 Your image"]);
+
+  // From the sheet: this copy only.
+  await showRegion(page, "Sheets");
+  await cards.first().click();
+  const scope = page.getByRole("group", { name: "Change" });
+  await expect(scope.getByRole("radio")).toHaveCount(3);
+  await expect(
+    scope.getByRole("radio", { name: "This copy", exact: true })
+  ).toBeChecked();
+  await expect(
+    scope.getByRole("radio", { name: "The 3 copies in this row", exact: true })
+  ).not.toBeChecked();
+  await expect(page.getByText(/^This replaces/)).toHaveCount(0);
+  await choice(page, "Sol Ring", "cmr").click();
+  await expect(picker(page)).toHaveCount(0);
+  await showRegion(page, "Deck");
+  await expect
+    .poll(rowTexts)
+    .toEqual(["1 CMR #123", "2 C21 #123", "1 Your image"]);
+  expect(await zipRequests(page)).toEqual({
+    files: 4,
+    requested: [C21, C21, CMR],
+  });
+
+  // From the two-copy row: the row is preselected.
+  await rows.nth(1).getByLabel("More actions for Sol Ring").click();
+  await deckPanel(page)
+    .getByRole("button", { name: "Change artwork", exact: true })
+    .click();
+  await expect(
+    scope.getByRole("radio", { name: "The 2 copies in this row", exact: true })
+  ).toBeChecked();
+  await expect(
+    scope.getByRole("radio", {
+      name: "All 4 cards named Sol Ring, across printings",
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect(page.getByText(/^This replaces/)).toHaveCount(0);
+  await choice(page, "Sol Ring", "cmr").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(rowTexts).toEqual(["3 CMR #123", "1 Your image"]);
+  expect(await zipRequests(page)).toEqual({
+    files: 4,
+    requested: [CMR, CMR, CMR],
+  });
+
+  // Every card with the name, including the upload.
+  await rows.nth(0).getByLabel("More actions for Sol Ring").click();
+  await deckPanel(page)
+    .getByRole("button", { name: "Change artwork", exact: true })
+    .click();
+  await expect(
+    scope.getByRole("radio", { name: "The 3 copies in this row", exact: true })
+  ).toBeChecked();
+  await scope
+    .getByRole("radio", {
+      name: "All 4 cards named Sol Ring, across printings",
+      exact: true,
+    })
+    .check();
+  await expect(
+    page.getByText("This replaces 1 uploaded image.", { exact: true })
+  ).toBeVisible();
+  await choice(page, "Sol Ring", "c21").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(rowTexts).toEqual(["4 C21 #123"]);
+  expect(await zipRequests(page)).toEqual({
+    files: 4,
+    requested: [C21, C21, C21, C21],
+  });
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(
+    page.getByText("Undid: change artwork for 4 cards named Sol Ring.", {
+      exact: true,
+    })
+  ).toBeVisible();
+  await expect.poll(rowTexts).toEqual(["3 CMR #123", "1 Your image"]);
+});
+
+test("choosing the printing a card already has records nothing", async ({
+  page,
+}) => {
+  await addDeck(page, "1 Sol Ring");
+  await artButton(page, "Sol Ring").click();
+  await expect(choice(page, "Sol Ring", "c21")).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await expect(
+    choice(page, "Sol Ring", "c21").getByText("Selected", { exact: true })
+  ).toBeVisible();
+  await showRegion(page, "Deck");
+  const undo = deckPanel(page).getByRole("button", { name: /^Undo/ });
+  const before = await undo.getAttribute("aria-label");
+  await choice(page, "Sol Ring", "c21").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(undo).toHaveAttribute("aria-label", before!);
+});
+
+test("an uploaded image can be switched to MPC bleed after upload", async ({
+  page,
+}) => {
+  const art = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 816;
+    canvas.height = 1110;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "red";
+    ctx.fillRect(0, 0, 816, 1110);
+    ctx.fillStyle = "blue";
+    ctx.fillRect(36, 36, 744, 1038);
+    return canvas.toDataURL("image/png").split(",")[1];
+  });
+  const buffer = Buffer.from(art, "base64");
+  await page.getByLabel("Upload MPC images", { exact: true }).setInputFiles({
+    name: "Mpc.png",
+    mimeType: "image/png",
+    buffer,
+  });
+  await expect(artButton(page, "Mpc").getByRole("img")).toBeVisible();
+  await openAddCards(page);
+  await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+    name: "Plain.png",
+    mimeType: "image/png",
+    buffer,
+  });
+  await expect(artButton(page, "Plain").getByRole("img")).toBeVisible();
+  // Each placement is its size on the page and a hash of the image drawn.
+  const placed = async () => {
+    const [sheet] = await pdfInfo(
+      await saveDownload(page, "Export fronts PDF")
+    );
+    expect(sheet.images).toBe(2);
+    return sheet.positions.map(([a, , , d]: number[], i: number) => [
+      a.toFixed(3),
+      d.toFixed(3),
+      sheet.sources[i],
+    ]);
+  };
+  const before = await placed();
+  expect(before[1]).not.toEqual(before[0]);
+  await artButton(page, "Plain").click();
+  await picker(page)
+    .getByRole("button", { name: "Bleed for this card", exact: true })
+    .click();
+  const baked = page.getByLabel("Image includes 3 mm MPC bleed", {
+    exact: true,
+  });
+  await expect(baked).not.toBeChecked();
+  await baked.check();
+  await expect(
+    page.getByRole("img", { name: "Card bleed preview", exact: true })
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Close artwork picker", exact: true })
+    .click();
+  await expect(artButton(page, "Plain").getByRole("img")).toBeVisible();
+  const after = await placed();
+  expect(after[1]).toEqual(after[0]);
+});
+
+test("the picker returns focus to the card that opened it", async ({
+  page,
+}) => {
+  await addDeck(page, "2 Sol Ring");
+  const card = artButton(page, "Sol Ring").first();
+  await expect(card.getByRole("img")).toBeVisible();
+  await card.click();
+  await expect(picker(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(card).toBeFocused();
+  await card.click();
+  await choice(page, "Sol Ring", "cmr").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(card).toBeFocused();
+
+  await showRegion(page, "Deck");
+  const menu = deckRow(page, "Sol Ring")
+    .filter({ hasText: "C21 #123" })
+    .getByLabel("More actions for Sol Ring", { exact: true });
+  await menu.click();
+  await deckPanel(page)
+    .getByRole("button", { name: "Change artwork", exact: true })
+    .click();
+  await expect(picker(page)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeFocused();
+  await menu.click();
+  await deckPanel(page)
+    .getByRole("button", { name: "Change artwork", exact: true })
+    .click();
+  await choice(page, "Sol Ring", "cmr").click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(
+    deckPanel(page).getByLabel("More actions for Sol Ring", { exact: true })
+  ).toBeFocused();
+});
+
+test("both picker tabs pass axe", async ({ page }) => {
+  await addDeck(page, "2 Sol Ring");
+  await openAddCards(page);
+  await page.getByLabel("Upload card images", { exact: true }).setInputFiles({
+    name: "Sol Ring.png",
+    mimeType: "image/png",
+    buffer: fixture,
+  });
+  await expect(artButton(page, "Sol Ring")).toHaveCount(3);
+  for (const scheme of ["light", "dark"] as const)
+    for (const [width, height] of [
+      [1440, 900],
+      [390, 844],
+    ]) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.setViewportSize({ width, height });
+      await showRegion(page, "Sheets");
+      await artButton(page, "Sol Ring").first().click();
+      await expect(choice(page, "Sol Ring", "cmr")).toBeVisible();
+      await page
+        .getByRole("radio", {
+          name: "All 3 cards named Sol Ring, across printings",
+        })
+        .check();
+      for (const tab of ["Printings", "Bleed for this card"]) {
+        const button = picker(page).getByRole("button", {
+          name: tab,
+          exact: true,
+        });
+        await button.click();
+        await expect(button).toHaveAttribute("aria-pressed", "true");
+        const axe = await new AxeBuilder({ page })
+          .include("dialog")
+          .withTags(["wcag2a", "wcag2aa", "wcag21aa"])
+          .analyze();
+        expect(
+          axe.violations.map((v) => ({
+            id: v.id,
+            where: `${tab} at ${width} px, ${scheme}`,
+            nodes: v.nodes.map((n) => n.target),
+          }))
+        ).toEqual([]);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth
+          )
+        ).toBe(true);
+      }
+      await page.keyboard.press("Escape");
+      await expect(picker(page)).toHaveCount(0);
+    }
+});

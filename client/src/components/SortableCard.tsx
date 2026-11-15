@@ -4,26 +4,42 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
   GripVertical,
+  Hourglass,
   MoreHorizontal,
   RotateCw,
   ImagePlus,
+  TriangleAlert,
 } from "lucide-react";
 import {
   useArtworkModalStore,
   useSettingsStore,
   useCardsStore,
+  usePreviewStore,
+  useUiStore,
 } from "../store";
 import { makeUploadedFileToken } from "../helpers/ImageHelper";
 import { errorMessage, notify } from "../store/notifications";
+import { deckEdit, UNDO_NOTICE_TAG, undoFromUser } from "../store/undo";
 import { copyUpload } from "../helpers/uploads";
 import { cornerGuideLines } from "../helpers/printGuides";
 import { GuideOverlay } from "./GuideOverlay";
 import type { CardOption } from "../types/Card";
 
+export type CardState = "ready" | "loading" | "missing" | "failed";
+
+const STATE_TEXT: Record<Exclude<CardState, "ready">, string> = {
+  loading: "Loading artwork…",
+  missing: "No artwork found",
+  failed: "Couldn't load this image",
+};
+
 type Props = {
   card: CardOption;
   globalIndex: number;
   imageSrc: string;
+  state: CardState;
+  located: boolean;
+  onRetry: (card: CardOption) => Promise<void>;
   totalCardWidth: number;
   totalCardHeight: number;
   viewMode: "front" | "back";
@@ -33,11 +49,15 @@ const SortableCard = memo(function SortableCard({
   card,
   globalIndex,
   imageSrc,
+  state,
+  located,
+  onRetry,
   totalCardWidth,
   totalCardHeight,
   viewMode,
   disableBackPageGuides,
 }: Props) {
+  const highlighted = useUiStore((s) => s.highlightedCardId === card.uuid);
   const {
     useCornerGuides,
     guideWidth,
@@ -67,6 +87,7 @@ const SortableCard = memo(function SortableCard({
   } = useSortable({ id: card.uuid });
   const menu = useRef<HTMLDetailsElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const art = useRef<HTMLButtonElement>(null);
   const currentIndex = () =>
     useCardsStore.getState().cards.findIndex((c) => c.uuid === card.uuid);
   const flip = () => {
@@ -74,21 +95,27 @@ const SortableCard = memo(function SortableCard({
     const state = useCardsStore.getState();
     const face = card.faces?.[index];
     if (!face) return;
-    state.updateCard(currentIndex(), { currentFaceIndex: index });
-    state.appendOriginalSelectedImages({ [card.uuid]: face.imageUrl });
-    state.clearSelectedImage(card.uuid);
-    state.clearSelectedBackFaceImage(card.uuid);
+    deckEdit(`flip ${card.name}`, () => {
+      state.updateCard(currentIndex(), { currentFaceIndex: index });
+      state.appendOriginalSelectedImages({ [card.uuid]: face.imageUrl });
+      state.clearSelectedImage(card.uuid);
+      state.clearSelectedBackFaceImage(card.uuid);
+    });
   };
-  const move = (direction: number) => {
-    const state = useCardsStore.getState();
+  const duplicate = () =>
+    deckEdit(`duplicate ${card.name}`, () =>
+      useCardsStore.getState().duplicateCardAt(currentIndex())
+    );
+  const moveTo = (target: (from: number, count: number) => number) => {
+    const store = useCardsStore.getState();
     const from = currentIndex();
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= state.cards.length) return;
-    const cards = [...state.cards];
+    const to = target(from, store.cards.length);
+    if (from < 0 || to < 0 || to >= store.cards.length || to === from) return;
+    const cards = [...store.cards];
     const [selected] = cards.splice(from, 1);
     cards.splice(to, 0, selected);
     if (menu.current) menu.current.open = false;
-    state.setCards(cards);
+    deckEdit(`move ${card.name}`, () => store.setCards(cards));
     requestAnimationFrame(() =>
       menu.current?.querySelector("summary")?.focus()
     );
@@ -99,18 +126,43 @@ const SortableCard = memo(function SortableCard({
     width: `${totalCardWidth}mm`,
     height: `${totalCardHeight}mm`,
   };
+  const highlight = (on: boolean) => {
+    const ui = useUiStore.getState();
+    if (on) ui.setHighlightedCardId(card.uuid);
+    else if (ui.highlightedCardId === card.uuid) ui.setHighlightedCardId(null);
+  };
+  const stateId = `card-state-${card.uuid}`;
+  const last = useCardsStore((s) => s.cards.length) - 1;
   return (
-    <div ref={setNodeRef} className="sortable-card" style={style}>
+    <div
+      ref={setNodeRef}
+      className="sortable-card"
+      style={style}
+      data-card-id={card.uuid}
+      data-highlighted={highlighted || undefined}
+      data-located={located || undefined}
+      onPointerEnter={() => highlight(true)}
+      onPointerLeave={() => highlight(false)}
+      onFocus={() => highlight(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) highlight(false);
+      }}
+    >
       <button
+        ref={art}
         className="card-art"
-        aria-label={`${card.name}, change artwork`}
+        aria-label={
+          state === "missing"
+            ? `${card.name}, find artwork`
+            : `${card.name}, change artwork`
+        }
+        aria-describedby={state === "ready" ? undefined : stateId}
         onContextMenu={(e) => {
           e.preventDefault();
           if (menu.current) menu.current.open = true;
         }}
         onClick={(e) => {
-          if (e.metaKey || e.ctrlKey)
-            useCardsStore.getState().duplicateCardAt(currentIndex());
+          if (e.metaKey || e.ctrlKey) duplicate();
           else
             useArtworkModalStore.getState().openModal({
               card,
@@ -119,15 +171,35 @@ const SortableCard = memo(function SortableCard({
             });
         }}
       >
-        {imageSrc ? (
+        {state === "ready" ? (
           <img src={imageSrc} alt={card.name} draggable={false} />
         ) : (
-          <span className="missing-art">
+          <span className={`card-state ${state}`}>
+            {state === "loading" ? (
+              <Hourglass className="card-state-icon" aria-hidden="true" />
+            ) : (
+              <TriangleAlert className="card-state-icon" aria-hidden="true" />
+            )}
             <strong>{card.name}</strong>
-            <span>Choose artwork</span>
+            <span id={stateId}>{STATE_TEXT[state]}</span>
+            {state === "missing" && (
+              <span className="card-state-action">Find artwork</span>
+            )}
           </span>
         )}
       </button>
+      {state === "failed" && (
+        <button
+          className="card-retry"
+          aria-label={`Retry ${card.name}`}
+          onClick={() => {
+            art.current?.focus();
+            void onRetry(card);
+          }}
+        >
+          Retry
+        </button>
+      )}
       <button
         ref={setActivatorNodeRef}
         {...attributes}
@@ -206,26 +278,46 @@ const SortableCard = memo(function SortableCard({
           )}
           <button
             onClick={() => {
-              useCardsStore.getState().duplicateCardAt(currentIndex());
+              duplicate();
               if (menu.current) menu.current.open = false;
             }}
           >
             Duplicate
           </button>
-          <button disabled={globalIndex === 0} onClick={() => move(-1)}>
+          <button disabled={globalIndex === 0} onClick={() => moveTo(() => 0)}>
+            Move to start
+          </button>
+          <button
+            disabled={globalIndex === 0}
+            onClick={() => moveTo((from) => from - 1)}
+          >
             Move earlier
           </button>
           <button
-            disabled={globalIndex === useCardsStore.getState().cards.length - 1}
-            onClick={() => move(1)}
+            disabled={globalIndex === last}
+            onClick={() => moveTo((from) => from + 1)}
           >
             Move later
           </button>
           <button
+            disabled={globalIndex === last}
+            onClick={() => moveTo((_, count) => count - 1)}
+          >
+            Move to end
+          </button>
+          <button
             className="danger"
             onClick={() => {
-              if (window.confirm(`Remove “${card.name}” from the deck?`))
-                useCardsStore.getState().removeCardAt(currentIndex());
+              const entry = deckEdit(`remove ${card.name}`, () =>
+                useCardsStore.getState().removeCardAt(currentIndex())
+              );
+              if (!entry) return;
+              usePreviewStore.getState().forget([card.uuid]);
+              notify(`Removed ${card.name}.`, "info", {
+                label: "Undo",
+                tag: UNDO_NOTICE_TAG,
+                run: () => undoFromUser(entry) !== null,
+              });
             }}
           >
             Remove card
@@ -271,14 +363,16 @@ const SortableCard = memo(function SortableCard({
                   );
                   return;
                 }
-                state.appendUploadedBackFiles({ [card.uuid]: copied });
-                state.appendOriginalSelectedBackImages({
-                  [card.uuid]: makeUploadedFileToken(card.uuid),
-                });
-                state.clearSelectedBackFaceImage(card.uuid);
-                state.updateCard(currentIndex(), {
-                  hasBackImage: true,
-                  backHasBakedBleed: false,
+                deckEdit(`add back for ${card.name}`, () => {
+                  state.appendUploadedBackFiles({ [card.uuid]: copied });
+                  state.appendOriginalSelectedBackImages({
+                    [card.uuid]: makeUploadedFileToken(card.uuid),
+                  });
+                  state.clearSelectedBackFaceImage(card.uuid);
+                  state.updateCard(currentIndex(), {
+                    hasBackImage: true,
+                    backHasBakedBleed: false,
+                  });
                 });
                 notify(
                   "Back image added. Upload a standard image without baked bleed.",

@@ -1,0 +1,371 @@
+/* Add cards form: the empty Deck panel and the Add cards dialog */
+.add-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.add-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.own-images {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.own-images h3 {
+  font-size: var(--text-body);
+}
+.upload-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-control);
+  padding: 13px 12px;
+  cursor: pointer;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+}
+.upload-option strong {
+  display: block;
+  font-size: var(--text-secondary);
+  color: var(--text);
+}
+.upload-option small {
+  font-size: var(--text-caption);
+}
+.upload-option input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  cursor: pointer;
+}
+.upload-option:focus-within {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.add-cards-dialog {
+  width: 560px;
+}
+
+/* Deck list */
+.deck-head {
+  position: sticky;
+  /* Sticky offsets start inside the panel's padding; reach its top edge. */
+  top: calc(-1 * var(--space-5));
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: calc(-1 * var(--space-5));
+  padding: var(--space-5) 0 var(--space-2);
+  background: var(--bg-panel);
+}
+.deck-head .panel-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border-radius: var(--radius-control);
+}
+.deck-head .panel-title:focus {
+  outline: none;
+}
+.deck-subtitle {
+  font-size: var(--text-body);
+  margin: var(--space-2) 0 var(--space-3);
+}
+.deck-tool.secondary-button {
+  min-height: 32px;
+  padding: 4px 10px 4px 8px;
+  gap: var(--space-1);
+}
+.deck-tool.text-button {
+  min-height: 32px;
+  padding: 4px 6px;
+  gap: var(--space-1);
+  border-radius: var(--radius-control);
+  font-size: var(--text-secondary);
+  color: var(--text);
+}
+.deck-panel .icon-button {
+  color: var(--text);
+}
+.deck-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 32px;
+  font-size: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.deck-status[data-attention] p {
+  color: var(--warn);
+  font-weight: 500;
+}
+.deck-status .text-button {
+  flex-shrink: 0;
+  text-decoration: underline;
+}
+.deck-filter {
+  margin-top: var(--space-2);
+}
+.deck-filter input {
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  color: var(--text);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--bg-raised);
+}
+.deck-list {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+.deck-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--space-1);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 58px;
+}
+/* content-visibility clips an open menu to the row, so lift it while one is open. */
+.deck-row:has(.action-menu[open]) {
+  content-visibility: visible;
+  z-index: 2;
+}
+.deck-row[data-active] {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.deck-qty {
+  line-height: 32px;
+  text-align: right;
+  padding-right: var(--space-1);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.deck-row-main {
+  min-width: 0;
+}
+.deck-row-name {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 6px;
+  text-align: left;
+  font-weight: 500;
+  border-radius: var(--radius-control);
+}
+/* Names wrap; only an extreme one is cut, at the third line. */
+.deck-row-name span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.deck-row-meta,
+.deck-row-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-2);
+  padding: 0 6px;
+  font-size: var(--text-caption);
+  overflow-wrap: anywhere;
+}
+.deck-row-meta {
+  margin-top: -4px;
+  padding-bottom: 4px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.deck-row-copy {
+  color: var(--text);
+  font-weight: 500;
+}
+.deck-row-status {
+  column-gap: var(--space-1);
+  padding-bottom: 4px;
+}
+.deck-row-status p {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+  color: var(--warn);
+  font-weight: 500;
+}
+.deck-row-status svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.deck-row[data-status="error"] .deck-row-status p {
+  color: var(--danger);
+}
+.deck-row-status .text-button {
+  min-height: 24px;
+  padding: 2px 4px;
+  font-weight: 600;
+  color: var(--text);
+  text-decoration: underline;
+}
+.deck-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.deck-empty {
+  padding: var(--space-5) 0;
+  color: var(--text-muted);
+  font-size: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.deck-empty .text-button {
+  font-size: inherit;
+  color: var(--text);
+  text-decoration: underline;
+}
+.deck-footer {
+  margin-top: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Menus in the Deck panel */
+.action-menu {
+  position: relative;
+}
+.action-menu > summary {
+  list-style: none;
+}
+.action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.action-menu[open] > summary {
+  background: var(--accent-soft);
+}
+.action-menu-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  min-width: 180px;
+  max-width: min(260px, calc(100vw - 32px));
+  padding: 6px;
+  background: var(--bg-raised);
+  color: var(--text);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-overlay);
+}
+.action-menu-panel[data-up] {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+.action-menu-panel button {
+  min-height: 36px;
+  padding: 6px 8px;
+  text-align: left;
+  font-size: var(--text-secondary);
+  border-radius: 4px;
+}
+
+/* Shown while files are dragged over the window */
+.drop-targets {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  padding: calc(var(--space-5) + var(--safe-top))
+    calc(var(--space-5) + var(--safe-right))
+    calc(var(--space-5) + var(--safe-bottom))
+    calc(var(--space-5) + var(--safe-left));
+  background: var(--backdrop);
+}
+.drop-targets[hidden] {
+  display: none;
+}
+.drop-target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 2px dashed var(--border-control);
+  border-radius: var(--radius-overlay);
+}
+.drop-target[data-over] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.drop-target > * {
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .upload-option:hover {
+    background: var(--accent-soft);
+  }
+  .deck-row-name:hover,
+  .deck-panel .icon-button:enabled:hover,
+  .action-menu > summary:hover,
+  .action-menu-panel button:enabled:hover,
+  .deck-tool.text-button:enabled:hover {
+    background: var(--accent-soft);
+  }
+  .deck-tool.text-button:enabled:hover {
+    text-decoration: none;
+  }
+}
+@media (pointer: coarse) {
+  .deck-panel .icon-button {
+    width: 36px;
+    height: 36px;
+  }
+  .deck-row-name,
+  .deck-qty {
+    min-height: 36px;
+    line-height: 26px;
+  }
+  .deck-qty {
+    line-height: 36px;
+  }
+}
+@media (max-width: 1099px) {
+  .deck-filter input {
+    font-size: 1rem;
+  }
+}
+@media (max-width: 559px) {
+  .drop-targets {
+    grid-template-columns: 1fr;
+  }
+}

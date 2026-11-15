@@ -1,0 +1,70 @@
+/* Paper is white in both themes, so everything drawn on it keeps the light roles. */
+:root,
+.proxy-page {
+  color-scheme: light;
+  --bg-panel: #f3f4f1;
+  --bg-raised: #ffffff;
+  --bg-mat: #2f4b41;
+  --mat-grid: #ffffff1f;
+  --paper: #ffffff;
+  --text: #17211d;
+  --text-muted: #4f5f58;
+  --text-on-accent: #ffffff;
+  --text-on-mat: #ffffff;
+  --text-on-mat-muted: #c9d6cf;
+  --border: #d9ddd6;
+  --border-control: #7d8a82;
+  --accent: #17604a;
+  --accent-hover: #104734;
+  --accent-soft: #e6f1eb;
+  --warn: #8a5300;
+  --warn-soft: #fdf1dc;
+  --danger: #a82a2d;
+  --danger-soft: #fbeceb;
+  --focus: #1f6fd1;
+  --backdrop: #101e18a8;
+  --shadow-paper: 0 1px 3px #0000004d, 0 12px 32px #00000038;
+  --shadow-overlay: 0 2px 8px #0f1c161f, 0 16px 48px #0f1c1638;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg-panel: #18201d;
+    --bg-raised: #212b27;
+    --bg-mat: #16241f;
+    --mat-grid: #ffffff14;
+    --paper: #ffffff;
+    --text: #eef3ef;
+    --text-muted: #b3c2b9;
+    --text-on-accent: #10201a;
+    --text-on-mat: #ffffff;
+    --text-on-mat-muted: #c9d6cf;
+    --border: #35443c;
+    --border-control: #76897d;
+    --accent: #9fdcb9;
+    --accent-hover: #bde9d0;
+    --accent-soft: #283f32;
+    --warn: #f2c46d;
+    --warn-soft: #3a2e17;
+    --danger: #ffadae;
+    --danger-soft: #3c2326;
+    --focus: #8fbcff;
+    --backdrop: #000000b3;
+    --shadow-paper: 0 1px 3px #00000080, 0 12px 32px #00000066;
+    --shadow-overlay: 0 2px 8px #00000066, 0 16px 48px #00000099;
+  }
+}
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius-control: 6px;
+  --radius-overlay: 10px;
+  --text-title: 1rem;
+  --text-body: 0.875rem;
+  --text-secondary: 0.8125rem;
+  --text-caption: 0.75rem;
+}
