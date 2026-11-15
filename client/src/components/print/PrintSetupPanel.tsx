@@ -360,7 +360,7 @@ export function PrintSetupPanel() {
         </div>
         <div className="footer-actions">
           <a
-            href="https://github.com/nimerix/proxies-at-home"
+            href="https://github.com/nimerix/oops-all-proxies"
             target="_blank"
             rel="noreferrer"
           >
