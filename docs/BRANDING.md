@@ -93,8 +93,9 @@ recorded in the PNG's pHYs metadata and in the SVG's millimetre dimensions.
 
 The file name is part of the cache key. Rename a back, for example
 `card-back-forest-v2.png`, whenever its artwork changes, and update
-`defaultCardbackUrl` in `client/src/constants.ts`. The old `/logo.png` and
-`/cardback.png` are kept for saved legacy URLs and test fixtures.
+`defaultCardbackUrl` in `client/src/constants.ts`. The app no longer uses the
+old `/logo.png` and `/cardback.png`; they stay in `client/public/` because the
+browser tests load them as fixtures.
 
 ## Usage
 

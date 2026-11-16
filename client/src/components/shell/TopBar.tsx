@@ -30,7 +30,7 @@ export function TopBar() {
           popoverTarget={SCHEME_MENU_ID}
           aria-label="Color scheme"
           title="Color scheme"
-          // Safari does not focus buttons on click; closing the menu returns focus here.
+          // Safari does not focus buttons on click; Escape in the menu returns focus here.
           onClick={(e) => e.currentTarget.focus()}
         >
           <Palette size={18} aria-hidden="true" />
