@@ -2860,6 +2860,10 @@ test("the color scheme restyles the site without changing the card back", async 
   });
   await expect(paletteButton).toBeFocused();
   await paletteButton.click();
+  await page.locator("#scheme-heading").click();
+  await page.keyboard.press("Escape");
+  await expect(paletteButton).toBeFocused();
+  await paletteButton.click();
   await page.locator(".sheet-label").first().click();
   await expect(schemeRadio(page, "forest")).toBeHidden();
   await settle(page);
