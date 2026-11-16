@@ -2,18 +2,17 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, Minus, MoreHorizontal, Plus } from "lucide-react";
 import type { DeckGroup } from "@/helpers/deckGroups";
-import { makeUploadedFileToken } from "@/helpers/imageUtils";
 import { canMoveGroup, moveGroup, type MoveTarget } from "@/helpers/deckGroups";
 import { plural } from "@/helpers/plural";
-import { copyUpload } from "@/helpers/uploads";
 import {
   useArtworkModalStore,
   useCardsStore,
   usePreviewStore,
   useUiStore,
 } from "@/store";
-import { errorMessage, notify } from "@/store/notifications";
+import { notify } from "@/store/notifications";
 import { deckEdit, UNDO_NOTICE_TAG, undoFromUser } from "@/store/undo";
+import type { ArtworkTab } from "@/store/artworkModal";
 
 export type RowStatus = "missing" | "error" | null;
 
@@ -160,7 +159,6 @@ export const DeckRow = memo(function DeckRow({
   const count = uuids.length;
   const deckLength = useCardsStore((s) => s.cards.length);
   const row = useRef<HTMLLIElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const canFlip = (card.faces?.length ?? 0) > 1;
 
   const showOnSheet = () => {
@@ -170,12 +168,13 @@ export const DeckRow = memo(function DeckRow({
     ui.setHighlightedCardId(uuids[next]);
     if (matchMedia("(max-width: 759px)").matches) ui.setRegion("sheets");
   };
-  const openPicker = () =>
+  const openPicker = (tab?: ArtworkTab) =>
     useArtworkModalStore.getState().openModal({
       card: useCardsStore.getState().cards[indexOf(uuids[0])] ?? card,
       index: indexOf(uuids[0]),
       autoFetchPrints: true,
       scope: "row",
+      tab,
     });
   const addOne = () =>
     deckEdit(`add one ${name}`, () =>
@@ -230,48 +229,6 @@ export const DeckRow = memo(function DeckRow({
       row.current?.querySelector<HTMLElement>(".action-menu summary")?.focus()
     );
   };
-  const uploadBack = async (file: File) => {
-    if (
-      !/^image\/(png|jpeg|webp)$/.test(file.type) ||
-      file.size > 30 * 1024 * 1024
-    ) {
-      notify("Choose a PNG, JPEG or WebP back image up to 30 MB.", "error");
-      return;
-    }
-    const before = uuids.map(
-      (uuid) => useCardsStore.getState().cards[indexOf(uuid)]
-    );
-    try {
-      const copies = await Promise.all(uuids.map(() => copyUpload(file)));
-      const state = useCardsStore.getState();
-      if (uuids.some((uuid, i) => state.cards[indexOf(uuid)] !== before[i])) {
-        notify(
-          "Back image not added: the card changed while the file was loading. Choose the image again."
-        );
-        return;
-      }
-      deckEdit(`add back for ${name}`, () => {
-        uuids.forEach((uuid, i) => {
-          state.appendUploadedBackFiles({ [uuid]: copies[i] });
-          state.appendOriginalSelectedBackImages({
-            [uuid]: makeUploadedFileToken(uuid),
-          });
-          state.clearSelectedBackFaceImage(uuid);
-          state.updateCard(indexOf(uuid), {
-            hasBackImage: true,
-            backHasBakedBleed: false,
-          });
-        });
-      });
-      notify(
-        "Back image added. Upload a standard image without baked bleed.",
-        "success"
-      );
-    } catch (error) {
-      notify(errorMessage(error), "error");
-    }
-  };
-
   const copies = count > 1 ? plural(count, "copy", "copies") : null;
   const moves: [MoveTarget, string][] = copies
     ? [
@@ -375,18 +332,14 @@ export const DeckRow = memo(function DeckRow({
                   {copies ? `Flip all ${copies}` : "Flip card"}
                 </button>
               )}
-              {card.isUserUpload && (
-                <button
-                  onClick={() => {
-                    close();
-                    fileInput.current?.click();
-                  }}
-                >
-                  {copies
-                    ? `Upload back image for ${copies}`
-                    : "Upload back image"}
-                </button>
-              )}
+              <button
+                onClick={() => {
+                  close();
+                  openPicker("back");
+                }}
+              >
+                Change back
+              </button>
               {moves.map(([to, label]) => (
                 <button
                   key={to}
@@ -412,21 +365,6 @@ export const DeckRow = memo(function DeckRow({
           )}
         </ActionMenu>
       </div>
-      {card.isUserUpload && (
-        <input
-          ref={fileInput}
-          type="file"
-          className="sr-only"
-          tabIndex={-1}
-          aria-label={`Back image for every copy of ${name}`}
-          accept="image/png,image/jpeg,image/webp"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (file) void uploadBack(file);
-          }}
-        />
-      )}
     </li>
   );
 });

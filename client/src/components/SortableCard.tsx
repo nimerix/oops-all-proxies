@@ -7,7 +7,6 @@ import {
   Hourglass,
   MoreHorizontal,
   RotateCw,
-  ImagePlus,
   TriangleAlert,
 } from "lucide-react";
 import {
@@ -17,10 +16,9 @@ import {
   usePreviewStore,
   useUiStore,
 } from "../store";
-import { makeUploadedFileToken } from "../helpers/ImageHelper";
-import { errorMessage, notify } from "../store/notifications";
+import { notify } from "../store/notifications";
+import type { ArtworkTab } from "../store/artworkModal";
 import { deckEdit, UNDO_NOTICE_TAG, undoFromUser } from "../store/undo";
-import { copyUpload } from "../helpers/uploads";
 import { cornerGuideLines } from "../helpers/printGuides";
 import { GuideOverlay } from "./GuideOverlay";
 import type { CardOption } from "../types/Card";
@@ -86,7 +84,6 @@ const SortableCard = memo(function SortableCard({
     transition,
   } = useSortable({ id: card.uuid });
   const menu = useRef<HTMLDetailsElement>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const art = useRef<HTMLButtonElement>(null);
   const currentIndex = () =>
     useCardsStore.getState().cards.findIndex((c) => c.uuid === card.uuid);
@@ -102,6 +99,13 @@ const SortableCard = memo(function SortableCard({
       state.clearSelectedBackFaceImage(card.uuid);
     });
   };
+  const openPicker = (tab?: ArtworkTab) =>
+    useArtworkModalStore.getState().openModal({
+      card,
+      index: currentIndex(),
+      autoFetchPrints: true,
+      tab,
+    });
   const duplicate = () =>
     deckEdit(`duplicate ${card.name}`, () =>
       useCardsStore.getState().duplicateCardAt(currentIndex())
@@ -163,12 +167,7 @@ const SortableCard = memo(function SortableCard({
         }}
         onClick={(e) => {
           if (e.metaKey || e.ctrlKey) duplicate();
-          else
-            useArtworkModalStore.getState().openModal({
-              card,
-              index: currentIndex(),
-              autoFetchPrints: true,
-            });
+          else openPicker();
         }}
       >
         {state === "ready" ? (
@@ -266,16 +265,18 @@ const SortableCard = memo(function SortableCard({
               Flip card
             </button>
           )}
-          {card.isUserUpload && (
-            <button
-              onClick={() => {
-                fileInput.current?.click();
-                if (menu.current) menu.current.open = false;
-              }}
-            >
-              Upload back image
-            </button>
-          )}
+          <button
+            onClick={() => {
+              if (menu.current) {
+                menu.current.open = false;
+                // The dialog returns focus to whatever had it when it opened.
+                menu.current.querySelector("summary")?.focus();
+              }
+              openPicker("back");
+            }}
+          >
+            Change back
+          </button>
           <button
             onClick={() => {
               duplicate();
@@ -324,67 +325,6 @@ const SortableCard = memo(function SortableCard({
           </button>
         </div>
       </details>
-      {card.isUserUpload && (
-        <>
-          <button
-            className="card-control back-upload"
-            aria-label={`Upload back for ${card.name}`}
-            onClick={() => fileInput.current?.click()}
-          >
-            <ImagePlus size={16} />
-          </button>
-          <input
-            ref={fileInput}
-            type="file"
-            className="sr-only"
-            tabIndex={-1}
-            aria-label={`Back image for ${card.name}`}
-            accept="image/png,image/jpeg,image/webp"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (!file) return;
-              if (
-                !/^image\/(png|jpeg|webp)$/.test(file.type) ||
-                file.size > 30 * 1024 * 1024
-              ) {
-                notify(
-                  "Choose a PNG, JPEG or WebP back image up to 30 MB.",
-                  "error"
-                );
-                return;
-              }
-              try {
-                const copied = await copyUpload(file);
-                const state = useCardsStore.getState();
-                if (state.cards.find((c) => c.uuid === card.uuid) !== card) {
-                  notify(
-                    "Back image not added: the card changed while the file was loading. Choose the image again."
-                  );
-                  return;
-                }
-                deckEdit(`add back for ${card.name}`, () => {
-                  state.appendUploadedBackFiles({ [card.uuid]: copied });
-                  state.appendOriginalSelectedBackImages({
-                    [card.uuid]: makeUploadedFileToken(card.uuid),
-                  });
-                  state.clearSelectedBackFaceImage(card.uuid);
-                  state.updateCard(currentIndex(), {
-                    hasBackImage: true,
-                    backHasBakedBleed: false,
-                  });
-                });
-                notify(
-                  "Back image added. Upload a standard image without baked bleed.",
-                  "success"
-                );
-              } catch (error) {
-                notify(errorMessage(error), "error");
-              }
-            }}
-          />
-        </>
-      )}
       {shouldShowGuides && (
         <GuideOverlay
           lines={cornerGuideLines(

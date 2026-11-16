@@ -75,6 +75,25 @@ async function mockCards(page: Page) {
   await page.route("**/api/cards/images/front?**", (route) =>
     route.fulfill({ contentType: "image/png", body: fixture })
   );
+  await page.route("https://drive.google.com/thumbnail?**", (route) =>
+    route.fulfill({ contentType: "image/png", body: fixture })
+  );
+  await page.route("**/api/mpcfill/search?**", (route) => {
+    const url = new URL(route.request().url());
+    const type = url.searchParams.get("type");
+    const page = Number(url.searchParams.get("page"));
+    const name = type === "card" ? url.searchParams.get("q") : "Cardback";
+    // Two pages, so "Show more" can be tested.
+    const cards = Array.from({ length: page ? 2 : 3 }, (_, i) => ({
+      id: `${type}-image-${page}-${i}`,
+      name: `${name} (${type === "card" ? "Extended" : "Style"} ${page * 3 + i + 1})`,
+      source: "Test source",
+      dpi: 1200,
+    }));
+    return route.fulfill({
+      json: { total: 5, hasMore: page === 0, cards },
+    });
+  });
   await page.route("https://api.scryfall.com/**", (route) => {
     const url = new URL(route.request().url());
     const reply = (json: unknown, status = 200) =>
@@ -144,6 +163,21 @@ async function addDeck(page: Page, deck: string) {
   // Deck panel turns into the deck list.
   await expect(page.getByLabel("Decklist", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+async function uploadBack(
+  page: Page,
+  name: string,
+  file: { name: string; buffer: Buffer }
+) {
+  await page
+    .getByRole("button", { name: `${name}, change artwork`, exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name, exact: true });
+  await dialog.getByRole("button", { name: "Back", exact: true }).click();
+  await dialog
+    .getByLabel(`Back image for ${name}`, { exact: true })
+    .setInputFiles({ ...file, mimeType: "image/png" });
+  await expect(dialog).toHaveCount(0);
 }
 async function saveDownload(page: Page, button: string) {
   await openExport(page);
@@ -300,12 +334,8 @@ test("uploaded fronts and backs, settings, duplicate, and reset survive reload c
       })
       .getByRole("img")
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Upload back for My custom card" })
-    .click();
-  await page.getByLabel("Back image for My custom card").setInputFiles({
+  await uploadBack(page, "My custom card", {
     name: "back.png",
-    mimeType: "image/png",
     buffer: fixture,
   });
   await page.getByRole("button", { name: "Landscape", exact: true }).click();
@@ -561,9 +591,8 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
     mimeType: "image/png",
     buffer: fixture,
   });
-  await page.getByLabel("Back image for Custom").setInputFiles({
+  await uploadBack(page, "Custom", {
     name: "Custom back.png",
-    mimeType: "image/png",
     buffer: fixture,
   });
   await setTwoSided(page, true);
@@ -657,8 +686,10 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
   await page.getByRole("button", { name: "Flip card", exact: true }).click();
   await expect(menuPanel).toHaveCount(0);
   await page.getByLabel("Actions for Custom", { exact: true }).click();
+  await page.getByRole("button", { name: "Change back", exact: true }).click();
+  const backDialog = page.getByRole("dialog", { name: "Custom", exact: true });
   const chooser = page.waitForEvent("filechooser");
-  await page
+  await backDialog
     .getByRole("button", { name: "Upload back image", exact: true })
     .click();
   await (
@@ -668,6 +699,10 @@ test("mixed duplex export, keyboard actions, mobile preview and artwork dialog",
     mimeType: "image/png",
     buffer: fixture,
   });
+  await expect(backDialog).toHaveCount(0);
+  await expect(
+    page.getByLabel("Actions for Custom", { exact: true })
+  ).toBeFocused();
   await page.getByLabel("Actions for Custom", { exact: true }).click();
   await page.getByRole("button", { name: "Move earlier", exact: true }).click();
   await expect(menuPanel).toHaveCount(0);
@@ -1921,11 +1956,7 @@ test("undo restores an uploaded card and its back across reload", async ({
     exact: true,
   });
   await expect(art.getByRole("img")).toBeVisible();
-  await page.getByLabel("Back image for Kept card").setInputFiles({
-    name: "Kept back.png",
-    mimeType: "image/png",
-    buffer: logo,
-  });
+  await uploadBack(page, "Kept card", { name: "Kept back.png", buffer: logo });
   await expect(page.getByText(/^Back image added\./)).toBeVisible();
   await expect(
     page.getByText("Saved in this browser", { exact: true })
@@ -2562,6 +2593,152 @@ test("undo stays reachable after the deck is emptied", async ({ page }) => {
   await expect(deck.getByRole("button", { name: /^Undo/ })).toHaveCount(0);
 });
 
+test("the card dialog takes fronts and backs from MPCFill", async ({
+  page,
+}) => {
+  const requested: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (url.includes("/api/")) requested.push(url);
+  });
+  await addDeck(page, "2 Sol Ring\n1 Day // Night");
+  await deckMenu(page, "Sol Ring", "Change artwork");
+  const solRing = page.getByRole("dialog", { name: "Sol Ring", exact: true });
+  await solRing.getByRole("button", { name: "MPCFill", exact: true }).click();
+  await expect(
+    solRing.getByText("Showing 3 of 5 images", { exact: true })
+  ).toBeVisible();
+  await solRing.getByRole("button", { name: "Show more", exact: true }).click();
+  await expect(solRing.getByText("5 images", { exact: true })).toBeVisible();
+  await expect(
+    solRing.getByRole("button", { name: /^Choose Sol Ring \(Extended 4\)/ })
+  ).toBeFocused();
+  await expect(
+    solRing.getByRole("button", { name: "Show more", exact: true })
+  ).toHaveCount(0);
+  await solRing
+    .getByRole("button", { name: /^Choose Sol Ring \(Extended 2\)/ })
+    .click();
+  await expect(solRing).toHaveCount(0);
+  await expect(deckRow(page, "Sol Ring")).toContainText("Your image");
+  await expect(deckPanel(page).locator(".deck-qty").first()).toHaveText("2");
+  await expect
+    .poll(() =>
+      requested.some((url) =>
+        url.endsWith("/api/cards/images/front?id=card-image-0-1")
+      )
+    )
+    .toBe(true);
+
+  // A double-faced card keeps printing its other face.
+  await deckMenu(page, "Day // Night", "Change artwork");
+  const dayNight = page.getByRole("dialog", {
+    name: "Day // Night",
+    exact: true,
+  });
+  await dayNight.getByRole("button", { name: "MPCFill", exact: true }).click();
+  await expect(dayNight.getByLabel("Card name", { exact: true })).toHaveValue(
+    "Day"
+  );
+  await dayNight
+    .getByRole("button", { name: /^Choose Day \(Extended 1\)/ })
+    .click();
+  await expect(deckRow(page, "Day // Night")).toContainText(
+    "Your image · own back"
+  );
+
+  await deckMenu(page, "Sol Ring", "Change back");
+  await expect(
+    solRing.getByRole("button", { name: "Back", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    solRing.getByText("The deck's default back", { exact: true })
+  ).toBeVisible();
+  await expect(
+    solRing.getByRole("radio", { name: "The 2 copies in this row" })
+  ).toBeChecked();
+  await solRing
+    .getByRole("button", { name: /^Choose Cardback \(Style 1\)/ })
+    .click();
+  await expect(solRing).toHaveCount(0);
+  await expect(deckRow(page, "Sol Ring")).toContainText("own back");
+  await expect(deckPanel(page).locator(".deck-qty").first()).toHaveText("2");
+
+  await artButton(page, "Day // Night").click();
+  await dayNight.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(
+    dayNight.getByText("Its own back image", { exact: true })
+  ).toBeVisible();
+  await dayNight
+    .getByRole("radio", { name: "The deck's default back, used by 0 cards" })
+    .check();
+  await dayNight.getByLabel("Cardback name", { exact: true }).fill("lotus");
+  await dayNight.getByRole("button", { name: "Search", exact: true }).click();
+  await expect
+    .poll(() =>
+      requested.some((url) =>
+        url.includes("/api/mpcfill/search?type=cardback&q=lotus&page=0")
+      )
+    )
+    .toBe(true);
+  await dayNight
+    .getByRole("button", { name: /^Choose Cardback \(Style 2\)/ })
+    .click();
+  await expect(dayNight).toHaveCount(0);
+  await setTwoSided(page, true);
+  await expect(
+    page.getByRole("img", { name: "Your custom cardback" })
+  ).toHaveAttribute(
+    "src",
+    "https://drive.google.com/thumbnail?sz=w400-h400&id=cardback-image-0-1"
+  );
+  // An upload in Print setup replaces the MPCFill back and its bleed.
+  const printPanel = page.locator("#print-panel");
+  const deckBleed = printPanel.getByLabel("Image includes 3 mm MPC bleed", {
+    exact: true,
+  });
+  await expect(deckBleed).toBeChecked();
+  await printPanel
+    .getByLabel("Custom cardback", { exact: true })
+    .setInputFiles({
+      name: "Deck back.png",
+      mimeType: "image/png",
+      buffer: fixture,
+    });
+  await expect(deckBleed).not.toBeChecked();
+
+  await deckMenu(page, "Sol Ring", "Change back");
+  await solRing
+    .getByRole("button", { name: "Remove assigned back", exact: true })
+    .click();
+  await expect(solRing).toHaveCount(0);
+  await expect(deckRow(page, "Sol Ring")).not.toContainText("own back");
+  await deckPanel(page)
+    .getByRole("button", { name: "Undo: remove back for 2 cards", exact: true })
+    .click();
+  await expect(deckRow(page, "Sol Ring")).toContainText("own back");
+
+  // A double-faced printing prints its own other face again.
+  await deckMenu(page, "Day // Night", "Change artwork");
+  await expect(
+    dayNight.getByText(
+      "A double-faced printing also replaces 1 assigned back.",
+      {
+        exact: true,
+      }
+    )
+  ).toBeVisible();
+  await dayNight
+    .getByRole("button", {
+      name: "Choose Day // Night, Day, Commander Legends, CMR #123, 2020",
+      exact: true,
+    })
+    .click();
+  await expect(dayNight).toHaveCount(0);
+  await expect(deckRow(page, "Day // Night")).toContainText("CMR #123");
+  await expect(deckRow(page, "Day // Night")).not.toContainText("own back");
+});
+
 test("every card action is reachable from the deck on A1 at fit page", async ({
   page,
 }) => {
@@ -2590,12 +2767,23 @@ test("every card action is reachable from the deck on A1 at fit page", async ({
   await deckMenu(page, "Day // Night", "Flip card");
   await expect(deckRow(page, "Day // Night")).toContainText("showing Night");
 
+  await deckMenu(page, "Own art", "Change back");
+  const backDialog = page.getByRole("dialog", { name: "Own art", exact: true });
+  await expect(
+    backDialog.getByRole("button", { name: "Back", exact: true })
+  ).toHaveAttribute("aria-pressed", "true");
   const chooser = page.waitForEvent("filechooser");
-  await deckMenu(page, "Own art", "Upload back image");
+  await backDialog
+    .getByRole("button", { name: "Upload back image", exact: true })
+    .click();
   await (
     await chooser
   ).setFiles({ name: "Own back.png", mimeType: "image/png", buffer: fixture });
+  await expect(backDialog).toHaveCount(0);
   await expect(deckRow(page, "Own art")).toContainText("own back");
+  await expect(
+    deckPanel(page).getByLabel("More actions for Own art", { exact: true })
+  ).toBeFocused();
 
   const deck = deckPanel(page);
   await deck

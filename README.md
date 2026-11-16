@@ -15,6 +15,7 @@ The workspace has three parts. **Deck** lists the cards with their quantities. T
 - Lists the deck with one row per distinct card. Each row has quantity buttons and a menu for changing artwork, flipping, moving and removing, so nothing depends on finding a card on the sheet. A card the search could not match stays listed under "needs artwork" until it is fixed. The filter narrows the list by name.
 - Undoes deck changes with the Undo button or Ctrl/Cmd+Z: adding, removing, reordering, quantity, artwork, flips, uploaded backs and per-card bleed, up to the last 20, until the page is reloaded.
 - Offers a searchable artwork picker that shows printings with their set names and years, and a set filter. A choice applies to one copy, to the copies in its deck row, or to every card of that name, and says how many cards change and whether uploaded images will be replaced. Replacing a card with a different one is a separate, named action.
+- Opens the same picker when you click a card. Besides Scryfall printings, its **MPCFill** tab searches [MPCFill](https://mpcfill.com/) community images by card name, and its **Back** tab is where a card's back is set: upload an image, choose an MPCFill cardback, or remove an assigned back. The Back tab can also set the deck's default back, which is used by every card without its own back. Choosing new front artwork leaves an assigned back in place, except a double-faced printing, which prints its own other face.
 - Accepts standard images, MPC images with **3 mm baked bleed**, and MPCFill XML/text with public Google Drive image IDs. XML slot order, assigned backs and the default cardback are preserved. Files can also be dropped anywhere on the window, onto one of two targets: trimmed card images, or images with 3 mm bleed. An upload filed under the wrong kind can be corrected afterwards in the picker's **Bleed for this card** tab.
 - Saves the deck, original uploaded files, assigned backs and print settings in the current browser using IndexedDB. Existing v6/v7 card workspaces and layout settings migrate in place. If storage is unavailable, you can continue in a clearly marked temporary workspace and download your work. Clearing browser data removes this local workspace; ZIP and decklist downloads provide portable originals and card lists.
 - Supports drag or keyboard reordering, duplicate/remove actions, custom backs, paper presets from Letter/A4 through A1, portrait/landscape, adjustable grid, bleed and spacing. Automatic grids maximize sheet capacity; custom grid preferences survive orientation changes.
@@ -69,7 +70,7 @@ npm ci --prefix worker
 npm run dev
 ```
 
-The client runs at `http://127.0.0.1:5173`. The browser searches Scryfall and loads card images from Scryfall directly; no Scryfall API key is required. Vite forwards `/api` to the Cloudflare Worker at `http://127.0.0.1:8787`, which only fetches public MPC Google Drive images. Uploaded files stay in the browser.
+The client runs at `http://127.0.0.1:5173`. The browser searches Scryfall and loads card images from Scryfall directly; no Scryfall API key is required. Vite forwards `/api` to the Cloudflare Worker at `http://127.0.0.1:8787`, which fetches public MPC Google Drive images and searches MPCFill. Uploaded files stay in the browser.
 
 PowerShell users can also run `./oops-all-proxies.ps1 install` and `./oops-all-proxies.ps1 dev`.
 
@@ -107,7 +108,7 @@ Client build configuration (`client/.env.local`):
 - Shared `printLayout`, `printGuides`, `cardSources` and `canvasProcessing` helpers define printed output.
 - PDFs and ZIPs are written by small built-in writers (`pdfWriter.ts`, `zipWriter.ts`) that assemble the file from Blob parts, so card images are not copied into page memory. The sheet grid, PDF and ZIP export and the artwork picker load on demand.
 - `client/src/helpers/scryfall.ts` searches Scryfall from the browser within Scryfall's limits: 2 card searches per second and 10 other requests per second. Deck import combines cards that need the same kind of search into one `or` query, prefers the card named exactly as written, and caches searches for an hour.
-- A Cloudflare Worker in `worker/` fetches public Google Drive images for MPC imports through one route, `/api/cards/images/front?id=…`. It follows redirects only between Google's download hosts and accepts only PNG, JPEG, WebP, AVIF and GIF files up to 30 MB.
+- A Cloudflare Worker in `worker/` has two routes. `/api/cards/images/front?id=…` fetches public Google Drive images for MPC imports and MPCFill choices. It follows redirects only between Google's download hosts and accepts only PNG, JPEG, WebP, AVIF and GIF files up to 30 MB. `/api/mpcfill/search?type=card|cardback&q=…&page=…` searches MPCFill's Google Drive sources (MPCFill sends no CORS headers), excludes NSFW-tagged images, returns 40 results per page and caches each page at the edge for a day.
 
 ## Credits
 

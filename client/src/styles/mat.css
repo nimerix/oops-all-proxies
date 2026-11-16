@@ -306,10 +306,6 @@
   top: 4px;
   left: 4px;
 }
-.back-upload {
-  bottom: 4px;
-  left: 4px;
-}
 .card-menu {
   position: absolute;
   bottom: 4px;
@@ -396,8 +392,7 @@
 }
 @media (max-width: 600px) {
   .drag-handle,
-  .flip-card,
-  .back-upload {
+  .flip-card {
     display: none;
   }
   .card-menu summary {
