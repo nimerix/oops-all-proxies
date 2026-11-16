@@ -2,6 +2,7 @@ import { useSettingsStore } from "@/store";
 import { blobToDataUrl } from "@/helpers/imageUtils";
 import { errorMessage, notify } from "@/store/notifications";
 import { defaultCardbackPreviewUrl } from "@/constants";
+import { previewImageUrl } from "@/helpers/mpcfill";
 import { SCHEMES } from "@/schemes";
 export function CardbackSettings() {
   const s = useSettingsStore();
@@ -25,7 +26,10 @@ export function CardbackSettings() {
                 throw new Error(
                   "Choose a PNG, JPEG or WebP image up to 30 MB."
                 );
-              s.setCustomCardbackUrl(await blobToDataUrl(file));
+              const url = await blobToDataUrl(file);
+              // The back being replaced may be an MPCFill image with bleed.
+              s.setCustomCardbackHasBleed(false);
+              s.setCustomCardbackUrl(url);
               notify("Custom cardback saved.", "success");
             } catch (error) {
               notify(errorMessage(error), "error");
@@ -33,14 +37,17 @@ export function CardbackSettings() {
           }}
         />
         <p className="hint">
-          Replaces the default back on cards without an assigned back face.
+          Replaces the default back on cards without an assigned back face. To
+          give a card its own back or choose an MPCFill back, click the card and
+          open Back.
         </p>
       </div>
       {s.customCardbackUrl ? (
         <>
           <img
             className="cardback-preview"
-            src={s.customCardbackUrl}
+            src={previewImageUrl(s.customCardbackUrl)}
+            referrerPolicy="no-referrer"
             alt="Your custom cardback"
             loading="lazy"
             decoding="async"

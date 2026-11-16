@@ -176,8 +176,9 @@ progress {
 }
 .picker-tabs {
   display: flex;
+  flex-wrap: wrap;
   flex-basis: 100%;
-  gap: var(--space-5);
+  column-gap: var(--space-5);
 }
 .picker-tabs button {
   min-height: 36px;
@@ -379,6 +380,61 @@ progress {
   color: var(--warn);
   font-size: var(--text-caption);
   font-weight: 500;
+}
+.mpc-credit a {
+  color: inherit;
+  text-decoration: underline;
+}
+.mpc-more {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-4) 0 var(--space-2);
+}
+.back-tab {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+}
+.back-current {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.back-preview {
+  flex: none;
+  width: 108px;
+  aspect-ratio: 63 / 88;
+  overflow: hidden;
+  border-radius: var(--radius-control);
+  background: var(--bg-panel);
+  outline: 1px solid var(--border);
+  outline-offset: -1px;
+}
+.back-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.back-summary {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.back-summary h3 {
+  font-size: var(--text-title);
+}
+.back-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-2);
+}
+.back-actions .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 .bleed-tab {
   display: grid;

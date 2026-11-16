@@ -1,12 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, ImageOff, Replace, Search } from "lucide-react";
 import { resolveImageUrl } from "../helpers/ImageHelper";
-import {
-  replacedUploads,
-  scopeOptions,
-  scopeTargets,
-  type ArtworkScope,
-} from "../helpers/artworkScope";
+import { scopeTargets } from "../helpers/artworkScope";
 import { needsArtwork } from "../helpers/deckGroups";
 import { plural } from "../helpers/plural";
 import {
@@ -16,10 +11,12 @@ import {
   type FoundCard,
   type SetInfo,
 } from "../helpers/scryfall";
-import { useArtworkModalStore, useCardsStore, usePreviewStore } from "../store";
+import { useCardsStore, usePreviewStore } from "../store";
 import { errorMessage, notify } from "../store/notifications";
 import { deckEdit } from "../store/undo";
 import type { CardOption } from "../types/Card";
+import { useArtworkScope, type DialogScope } from "../hooks/useArtworkScope";
+import { ScopeFieldset } from "./ArtworkScope";
 
 const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
@@ -28,54 +25,7 @@ const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const isOtherCard = (print: FoundCard, name: string) =>
   !sameName(print.name, name) && !sameName(print.name.split(" // ")[0], name);
 
-function scopeLabel(scope: ArtworkScope, count: number, name: string) {
-  if (scope === "row") return `The ${count} copies in this row`;
-  if (scope === "name")
-    return `All ${count} cards named ${name}, across printings`;
-  return "This copy";
-}
-
-function useScope(card: CardOption) {
-  const cards = useCardsStore((s) => s.cards);
-  const originalSelectedImages = useCardsStore((s) => s.originalSelectedImages);
-  const originalSelectedBackImages = useCardsStore(
-    (s) => s.originalSelectedBackImages
-  );
-  const uploadedFiles = useCardsStore((s) => s.uploadedFiles);
-  const opened = useArtworkModalStore((s) => s.scope);
-  const [chosen, setChosen] = useState<ArtworkScope>(opened);
-  return useMemo(() => {
-    const images = {
-      originalSelectedImages,
-      originalSelectedBackImages,
-      uploadedFiles,
-    };
-    const options = scopeOptions(card, cards, images);
-    const scope = options.some((o) => o.scope === chosen) ? chosen : "copy";
-    const { fronts, backs } = replacedUploads(
-      scopeTargets(scope, card, cards, images),
-      cards,
-      images
-    );
-    const parts = [
-      fronts && plural(fronts, "uploaded image", "uploaded images"),
-      backs && plural(backs, "custom back", "custom backs"),
-    ].filter(Boolean);
-    const replaces = parts.length
-      ? `This replaces ${parts.join(" and ")}.`
-      : "";
-    return { options, scope, setScope: setChosen, replaces };
-  }, [
-    card,
-    cards,
-    originalSelectedImages,
-    originalSelectedBackImages,
-    uploadedFiles,
-    chosen,
-  ]);
-}
-
-function Thumbnail({ src, alt }: { src: string; alt: string }) {
+export function Thumbnail({ src, alt }: { src: string; alt: string }) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   if (state === "error")
     return (
@@ -100,9 +50,13 @@ function Thumbnail({ src, alt }: { src: string; alt: string }) {
 export function ArtworkPrintings({
   card,
   onClose,
+  scope: chosenScope,
+  onScopeChange,
 }: {
   card: CardOption;
   onClose: () => void;
+  scope: DialogScope;
+  onScopeChange: (scope: DialogScope) => void;
 }) {
   const language = useCardsStore((s) => s.globalLanguage);
   const original = useCardsStore((s) => s.originalSelectedImages[card.uuid]);
@@ -118,7 +72,11 @@ export function ArtworkPrintings({
   const [filter, setFilter] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { options, scope, setScope, replaces } = useScope(card);
+  const { options, scope, replaces, assignedBacks } = useArtworkScope(
+    card,
+    chosenScope,
+    "front"
+  );
   const replacesCard = !sameName(requestedName, card.name);
   useEffect(() => {
     let active = true;
@@ -187,7 +145,11 @@ export function ArtworkPrintings({
   function choose(print: FoundCard, url: string, faceIndex: number) {
     const state = useCardsStore.getState();
     const current = state.cards.find((c) => c.uuid === card.uuid) ?? card;
+    // A double-faced printing prints its own other face, so it replaces an
+    // assigned back. Other front choices leave the back alone.
+    const ownBack = (print.faces?.length ?? 0) > 1;
     const differs = (c: CardOption) =>
+      (ownBack && !!state.originalSelectedBackImages[c.uuid]) ||
       state.originalSelectedImages[c.uuid] !== url ||
       c.name !== print.name ||
       c.set !== print.set ||
@@ -197,12 +159,15 @@ export function ArtworkPrintings({
       c.imageUrls.join("\n") !== print.imageUrls.join("\n") ||
       c.isUserUpload ||
       !!c.hasBakedBleed ||
-      !!c.hasBackImage ||
-      !!c.backHasBakedBleed ||
-      !!state.originalSelectedBackImages[c.uuid] ||
-      !!state.uploadedFiles[c.uuid] ||
-      !!state.uploadedBackFiles[c.uuid];
-    const targets = new Set(scopeTargets(scope, current, state.cards, state));
+      !!state.uploadedFiles[c.uuid];
+    const targets = new Set(
+      scopeTargets(
+        scope === "deck" ? "copy" : scope,
+        current,
+        state.cards,
+        state
+      )
+    );
     const ids = new Set(
       state.cards
         .filter((c) => targets.has(c.uuid) && differs(c))
@@ -239,8 +204,9 @@ export function ArtworkPrintings({
                     currentFaceIndex: faceIndex,
                     isUserUpload: false,
                     hasBakedBleed: false,
-                    hasBackImage: false,
-                    backHasBakedBleed: false,
+                    ...(ownBack
+                      ? { hasBackImage: false, backHasBakedBleed: false }
+                      : {}),
                   }
                 : c
             ),
@@ -249,8 +215,14 @@ export function ArtworkPrintings({
             selectedBackFaceImages: strip(s.selectedBackFaceImages),
             bleedReports: strip(s.bleedReports),
             uploadedFiles: strip(s.uploadedFiles),
-            uploadedBackFiles: strip(s.uploadedBackFiles),
-            originalSelectedBackImages: strip(s.originalSelectedBackImages),
+            ...(ownBack
+              ? {
+                  originalSelectedBackImages: strip(
+                    s.originalSelectedBackImages
+                  ),
+                  uploadedBackFiles: strip(s.uploadedBackFiles),
+                }
+              : {}),
           };
         })
     );
@@ -347,25 +319,21 @@ export function ArtworkPrintings({
       {replacesCard && (
         <p className="replace-note">Choosing one replaces {card.name}.</p>
       )}
-      {options.length > 1 && (
-        <fieldset className="scope-options">
-          <legend>Change</legend>
-          {options.map((option) => (
-            <label key={option.scope} className="check-field">
-              <input
-                type="radio"
-                name="artwork-scope"
-                value={option.scope}
-                checked={scope === option.scope}
-                onChange={() => setScope(option.scope)}
-              />
-              {scopeLabel(option.scope, option.count, card.name)}
-            </label>
-          ))}
-        </fieldset>
-      )}
+      <ScopeFieldset
+        card={card}
+        options={options}
+        scope={scope}
+        replaces={replaces}
+        onChange={onScopeChange}
+      />
       <div aria-live="polite">
-        {replaces && <p className="scope-note">{replaces}</p>}
+        {assignedBacks > 0 &&
+          prints.some((p) => (p.faces?.length ?? 0) > 1) && (
+            <p className="scope-note">
+              A double-faced printing also replaces{" "}
+              {plural(assignedBacks, "assigned back", "assigned backs")}.
+            </p>
+          )}
       </div>
       {loading ? null : error ? (
         <div role="alert" className="empty-results">

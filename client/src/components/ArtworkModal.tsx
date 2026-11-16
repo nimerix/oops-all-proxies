@@ -3,7 +3,11 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { groupDeck, groupOf } from "../helpers/deckGroups";
 import { useArtworkModalStore, useCardsStore } from "../store";
+import type { ArtworkTab } from "../store/artworkModal";
+import { ArtworkBack } from "./ArtworkBack";
+import { ArtworkMpcFill } from "./ArtworkMpcFill";
 import { ArtworkPrintings } from "./ArtworkPrintings";
+import type { DialogScope } from "../hooks/useArtworkScope";
 import {
   BleedArtworkControls,
   type BleedPreviewRetry,
@@ -21,7 +25,12 @@ export function ArtworkModal(props: BleedPreviewRetry) {
     : null;
 }
 
-type Tab = "printings" | "bleed";
+const TABS: [ArtworkTab, string][] = [
+  ["printings", "Printings"],
+  ["mpcfill", "MPCFill"],
+  ["back", "Back"],
+  ["bleed", "Bleed for this card"],
+];
 
 function ArtworkDialog({
   card: opened,
@@ -30,8 +39,18 @@ function ArtworkDialog({
   const dialog = useRef<HTMLDialogElement>(null);
   const card =
     useCardsStore((s) => s.cards.find((c) => c.uuid === opened.uuid)) ?? opened;
-  const [tab, setTab] = useState<Tab>("printings");
+  const [tab, setTab] = useState(() => useArtworkModalStore.getState().tab);
+  // Searches keep their results while another tab is shown.
+  const [visited, setVisited] = useState(() => new Set([tab]));
+  const [scope, setScope] = useState<DialogScope>(
+    () => useArtworkModalStore.getState().scope
+  );
   const close = useArtworkModalStore.getState().closeModal;
+  const show = (next: ArtworkTab) => {
+    setTab(next);
+    setVisited((seen) => (seen.has(next) ? seen : new Set(seen).add(next)));
+  };
+  const tabProps = { card, onClose: close, scope, onScopeChange: setScope };
   useEffect(() => {
     const el = dialog.current;
     // Safari does not focus a button on click, so a click on the sheet leaves
@@ -80,17 +99,12 @@ function ArtworkDialog({
           <X size={20} aria-hidden="true" />
         </button>
         <div className="picker-tabs" role="group" aria-label="Picker view">
-          {(
-            [
-              ["printings", "Printings"],
-              ["bleed", "Bleed for this card"],
-            ] as const
-          ).map(([id, label]) => (
+          {TABS.map(([id, label]) => (
             <button
               key={id}
               type="button"
               aria-pressed={tab === id}
-              onClick={() => setTab(id)}
+              onClick={() => show(id)}
             >
               {label}
             </button>
@@ -98,9 +112,21 @@ function ArtworkDialog({
         </div>
       </header>
       <div className="dialog-body artwork-body">
-        <div className="printings-tab" hidden={tab !== "printings"}>
-          <ArtworkPrintings card={card} onClose={close} />
-        </div>
+        {visited.has("printings") && (
+          <div className="printings-tab" hidden={tab !== "printings"}>
+            <ArtworkPrintings {...tabProps} />
+          </div>
+        )}
+        {visited.has("mpcfill") && (
+          <div className="printings-tab" hidden={tab !== "mpcfill"}>
+            <ArtworkMpcFill {...tabProps} />
+          </div>
+        )}
+        {visited.has("back") && (
+          <div hidden={tab !== "back"}>
+            <ArtworkBack {...tabProps} />
+          </div>
+        )}
         {tab === "bleed" && (
           <BleedArtworkControls card={card} onRetry={onRetry} />
         )}
