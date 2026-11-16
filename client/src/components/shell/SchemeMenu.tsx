@@ -10,7 +10,14 @@ export function SchemeMenu() {
   const scheme = useSchemeStore((s) => s.scheme);
   const setScheme = useSchemeStore((s) => s.setScheme);
   return (
-    <div id={SCHEME_MENU_ID} className="scheme-menu" popover="auto">
+    // tabIndex keeps focus in the menu after a click on blank space, so Escape
+    // still returns it to the palette button.
+    <div
+      id={SCHEME_MENU_ID}
+      className="scheme-menu"
+      popover="auto"
+      tabIndex={-1}
+    >
       <h2 id="scheme-heading" className="scheme-title">
         Color scheme
       </h2>
