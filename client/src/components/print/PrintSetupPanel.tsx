@@ -3,6 +3,7 @@ import {
   useCardsStore,
   useLoadingStore,
   usePreviewStore,
+  useSchemeStore,
   useSettingsStore,
 } from "@/store";
 import { printLayout } from "@/helpers/printLayout";
@@ -34,6 +35,7 @@ async function resetAppData() {
       "proxxied:layout-settings:v2",
     ])
       localStorage.removeItem(key);
+    useSchemeStore.getState().resetScheme();
     useCardsStore.getState().clearAll();
     useUndoStore.getState().clear();
     usePreviewStore.getState().clear();
@@ -64,6 +66,7 @@ export function PrintSetupPanel() {
     s.useHighQualityPreviews,
     s.customCardbackUrl,
     s.customCardbackHasBleed,
+    s.cardbackDesign,
   ]);
   const maxSpacing = Math.floor(printLayout(s).maxSpacing * 10) / 10;
   return (

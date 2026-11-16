@@ -18,6 +18,14 @@
   overflow: hidden;
 }
 .top-bar {
+  /* The bar is the scheme's leather in both themes, so its contents take the on-bar colors. */
+  --text: var(--bar-text);
+  --text-muted: var(--bar-muted);
+  --accent: var(--bar-accent);
+  --accent-hover: var(--bar-accent-hover);
+  --text-on-accent: var(--bar-text-on-accent);
+  --danger: var(--bar-danger);
+  --focus: var(--bar-text);
   height: calc(48px + var(--safe-top));
   flex-shrink: 0;
   display: flex;
@@ -25,8 +33,8 @@
   gap: var(--space-4);
   padding: var(--safe-top) calc(var(--space-4) + var(--safe-right)) 0
     calc(var(--space-4) + var(--safe-left));
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
+  border-bottom: 1px solid var(--bar-border);
+  background: var(--bar-bg);
 }
 .brand {
   flex-shrink: 0;
@@ -34,15 +42,77 @@
   text-decoration: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-weight: 700;
-  font-size: 1.125rem;
-  letter-spacing: -0.03em;
+  gap: 8px;
   border-radius: var(--radius-control);
 }
-.brand svg,
+/* Cards in the symbol are separated by an outline in the surface color. */
+.brand-mark rect {
+  stroke: var(--bar-bg);
+}
+.brand-mark rect:nth-child(1) {
+  fill: var(--brand-card1);
+}
+.brand-mark rect:nth-child(2) {
+  fill: var(--brand-card2);
+}
+.brand-mark rect:nth-child(3) {
+  fill: var(--brand-card3);
+}
 .brand-accent {
-  color: var(--accent);
+  fill: var(--brand-accent);
+}
+.scheme-button {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  color: var(--text);
+}
+.scheme-menu {
+  position: fixed;
+  inset: calc(48px + var(--safe-top) + var(--space-2))
+    calc(var(--space-4) + var(--safe-right)) auto auto;
+  width: min(320px, calc(100vw - 2 * var(--space-4)));
+  margin: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-overlay);
+  background: var(--bg-panel);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+}
+.scheme-menu:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* Without popover support the menu cannot open, so hide its button too. */
+@supports not selector(:popover-open) {
+  .scheme-menu,
+  .scheme-button {
+    display: none;
+  }
+}
+.scheme-title {
+  font-size: var(--text-body);
+  letter-spacing: normal;
+}
+.scheme-swatch {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-control);
+  border-radius: 10px;
+  background: var(--bar-bg);
+}
+.scheme-swatch .brand-mark {
+  width: 30px;
+  height: 30px;
+}
+@media (hover: hover) {
+  .scheme-button:hover {
+    background: #ffffff1f;
+  }
 }
 .deck-summary {
   min-width: 0;

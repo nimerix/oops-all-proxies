@@ -6,6 +6,7 @@ import {
   hydrationErrorMessage,
 } from "../helpers/IndexedDBStorage";
 import { finiteClamp, fitLayout } from "../helpers/printLayout";
+import { DEFAULT_SCHEME, isSchemeId, type SchemeId } from "../schemes";
 import {
   DEFAULT_SCAN_INSET_MM,
   MAX_SCAN_INSET_MM,
@@ -96,6 +97,9 @@ type Store = {
   setCustomCardbackUrl: (url: string | null) => void;
   customCardbackHasBleed: boolean;
   setCustomCardbackHasBleed: (value: boolean) => void;
+  // Which built-in back prints when there is no custom one.
+  cardbackDesign: SchemeId;
+  setCardbackDesign: (value: SchemeId) => void;
   disableBackPageGuides: boolean;
   setDisableBackPageGuides: (value: boolean) => void;
   exportCollated: boolean;
@@ -141,6 +145,7 @@ export const defaultPageSettings = {
   viewMode: "front",
   customCardbackUrl: null,
   customCardbackHasBleed: false,
+  cardbackDesign: DEFAULT_SCHEME,
   disableBackPageGuides: true,
   exportCollated: false,
   twoSided: false,
@@ -248,6 +253,9 @@ export function restoreSettings(value: unknown): Partial<Store> {
       !saved.customCardbackUrl.startsWith("blob:")
         ? saved.customCardbackUrl
         : null,
+    cardbackDesign: isSchemeId(saved.cardbackDesign)
+      ? saved.cardbackDesign
+      : DEFAULT_SCHEME,
     viewMode: saved.viewMode === "back" ? "back" : "front",
     isProcessing: false,
     processingProgress: 0,
@@ -359,6 +367,7 @@ export const useSettingsStore = create<Store>()(
       setCustomCardbackUrl: (customCardbackUrl) => set({ customCardbackUrl }),
       setCustomCardbackHasBleed: (customCardbackHasBleed) =>
         set({ customCardbackHasBleed }),
+      setCardbackDesign: (cardbackDesign) => set({ cardbackDesign }),
       setDisableBackPageGuides: (disableBackPageGuides) =>
         set({ disableBackPageGuides }),
       setExportCollated: (exportCollated) => set({ exportCollated }),

@@ -8,6 +8,7 @@ import {
   useSettingsStore,
   useUiStore,
 } from "@/store";
+import { defaultCardbackUrl } from "@/constants";
 import type { LoadingTask } from "@/store/loading";
 import type { ExportDpi } from "@/store/settings";
 import { errorMessage, notify } from "@/store/notifications";
@@ -80,6 +81,7 @@ function ExportPanel() {
           pagesPerBatch: s.exportBatchSize,
           isBackSide: back,
           customCardbackUrl: s.customCardbackUrl ?? undefined,
+          defaultCardback: defaultCardbackUrl(s.cardbackDesign),
           onProgress: useLoadingStore.getState().setLoadingProgress,
           abortSignal: signal,
         });

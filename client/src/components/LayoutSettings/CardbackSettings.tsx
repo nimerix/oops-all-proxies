@@ -1,6 +1,8 @@
-import { useSettingsStore } from "@/store/settings";
+import { useSettingsStore } from "@/store";
 import { blobToDataUrl } from "@/helpers/imageUtils";
 import { errorMessage, notify } from "@/store/notifications";
+import { defaultCardbackPreviewUrl } from "@/constants";
+import { SCHEMES } from "@/schemes";
 export function CardbackSettings() {
   const s = useSettingsStore();
   return (
@@ -30,7 +32,9 @@ export function CardbackSettings() {
             }
           }}
         />
-        <p className="hint">Used for cards without an assigned back face.</p>
+        <p className="hint">
+          Replaces the default back on cards without an assigned back face.
+        </p>
       </div>
       {s.customCardbackUrl ? (
         <>
@@ -38,6 +42,8 @@ export function CardbackSettings() {
             className="cardback-preview"
             src={s.customCardbackUrl}
             alt="Your custom cardback"
+            loading="lazy"
+            decoding="async"
           />
           <label className="check-field">
             <input
@@ -58,7 +64,32 @@ export function CardbackSettings() {
           </button>
         </>
       ) : (
-        <p className="hint">Using the default cardback.</p>
+        <fieldset>
+          <legend>Default card back</legend>
+          <div className="swatch-picker">
+            {SCHEMES.map(({ id, label }) => (
+              <label key={id} className="swatch-option">
+                <input
+                  type="radio"
+                  name="cardback-design"
+                  value={id}
+                  checked={s.cardbackDesign === id}
+                  onChange={() => s.setCardbackDesign(id)}
+                />
+                <img
+                  className="cardback-swatch"
+                  src={defaultCardbackPreviewUrl(id)}
+                  alt=""
+                  width="50"
+                  height="70"
+                  loading="lazy"
+                  decoding="async"
+                />
+                <span className="swatch-name">{label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
       )}
       <label className="check-field">
         <input

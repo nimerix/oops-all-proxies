@@ -14,6 +14,7 @@ import {
 import { cardSource } from "../helpers/cardSources";
 import { cardBleedOptions } from "../helpers/cardBleedOptions";
 import { useCardsStore, usePreviewStore, useSettingsStore } from "../store";
+import { defaultCardbackUrl } from "../constants";
 import type { CardOption } from "../types/Card";
 import type { BleedArtworkOptions } from "../helpers/bleedArtwork";
 
@@ -78,6 +79,9 @@ export function useImageProcessing({
 }) {
   const customBack = useSettingsStore((s) => s.customCardbackUrl);
   const customHasBleed = useSettingsStore((s) => s.customCardbackHasBleed);
+  const defaultBack = useSettingsStore((s) =>
+    defaultCardbackUrl(s.cardbackDesign)
+  );
   const highQuality = useSettingsStore((s) => s.useHighQualityPreviews);
   const bleedSource = useSettingsStore((s) => s.bleedSource);
   const scanInsetMm = useSettingsStore((s) => s.scanInsetMm);
@@ -107,7 +111,8 @@ export function useImageProcessing({
         images,
         back,
         customBack,
-        customHasBleed
+        customHasBleed,
+        defaultBack
       );
       const dpi = highQuality ? 300 : PREVIEW_CARD_DPI;
       const key = `${card.uuid}:${back}`;
@@ -149,7 +154,8 @@ export function useImageProcessing({
           current,
           back,
           settings.customCardbackUrl,
-          settings.customCardbackHasBleed
+          settings.customCardbackHasBleed,
+          defaultCardbackUrl(settings.cardbackDesign)
         );
         return (
           epoch === generation.current &&
@@ -242,6 +248,7 @@ export function useImageProcessing({
       highQuality,
       customBack,
       customHasBleed,
+      defaultBack,
       bleedSource,
       scanInsetMm,
       borderBleed,

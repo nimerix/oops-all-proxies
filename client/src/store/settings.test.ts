@@ -54,6 +54,19 @@ test("a saved one-sided choice wins over exportCollated", () => {
   expect(restored.exportCollated).toBe(true);
   expect(restored.zoom).toBe(0.5);
 });
+test("the default card back is saved, validated and reset with print settings", () => {
+  expect(restoreSettings({}).cardbackDesign).toBe("midnight");
+  expect(restoreSettings({ cardbackDesign: "forest" }).cardbackDesign).toBe(
+    "forest"
+  );
+  expect(restoreSettings({ cardbackDesign: "plaid" }).cardbackDesign).toBe(
+    "midnight"
+  );
+  useSettingsStore.getState().setCardbackDesign("oxblood");
+  expect(useSettingsStore.getState().cardbackDesign).toBe("oxblood");
+  useSettingsStore.getState().resetSettings();
+  expect(useSettingsStore.getState().cardbackDesign).toBe("midnight");
+});
 test("an invalid zoom mode falls back to fit page", () => {
   expect(restoreSettings({ zoomMode: "huge", zoom: 2 }).zoomMode).toBe("page");
 });

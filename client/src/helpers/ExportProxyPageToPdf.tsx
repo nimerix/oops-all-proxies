@@ -118,6 +118,7 @@ export async function exportProxyPagesToPdf({
   isBackSide = false,
   customCardbackUrl,
   customCardbackHasBleed = false,
+  defaultCardback,
   exportCollated = false,
   disableBackPageGuides = true,
 }: {
@@ -152,6 +153,7 @@ export async function exportProxyPagesToPdf({
   isBackSide?: boolean;
   customCardbackUrl?: string;
   customCardbackHasBleed?: boolean;
+  defaultCardback?: string;
   exportCollated?: boolean;
   disableBackPageGuides?: boolean;
 }) {
@@ -283,7 +285,8 @@ export async function exportProxyPagesToPdf({
       },
       isBack,
       customCardbackUrl,
-      customCardbackHasBleed
+      customCardbackHasBleed,
+      defaultCardback
     );
     const artwork = cardBleedOptions(card, {
       source: bleedSource,
