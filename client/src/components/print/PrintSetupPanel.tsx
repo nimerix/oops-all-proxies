@@ -51,6 +51,7 @@ async function resetAppData() {
 export function PrintSetupPanel() {
   const s = useSettingsStore();
   const initial = useRef(true);
+  const initialBack = useRef(true);
   useEffect(() => {
     if (initial.current) {
       initial.current = false;
@@ -64,10 +65,15 @@ export function PrintSetupPanel() {
     s.scanInsetMm,
     s.scanCornerRadiusMm,
     s.useHighQualityPreviews,
-    s.customCardbackUrl,
-    s.customCardbackHasBleed,
-    s.cardbackDesign,
   ]);
+  // The card back settings change only the backs, so the fronts keep their previews.
+  useEffect(() => {
+    if (initialBack.current) {
+      initialBack.current = false;
+      return;
+    }
+    useCardsStore.setState({ selectedBackFaceImages: {} });
+  }, [s.customCardbackUrl, s.customCardbackHasBleed, s.cardbackDesign]);
   const maxSpacing = Math.floor(printLayout(s).maxSpacing * 10) / 10;
   return (
     <aside

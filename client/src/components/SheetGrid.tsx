@@ -162,7 +162,7 @@ export default function SheetGrid({
                     return <div key={`empty-${slot}`} aria-hidden="true" />;
                   return (
                     <SheetCard
-                      key={`${card.uuid}:${s.viewMode}:${s.bleedEdgeWidth}:${s.useHighQualityPreviews}:${s.customCardbackUrl?.length}:${s.customCardbackHasBleed}:${s.cardbackDesign}`}
+                      key={`${card.uuid}:${s.viewMode}:${s.bleedEdgeWidth}:${s.useHighQualityPreviews}${back ? `:${s.customCardbackUrl?.length}:${s.customCardbackHasBleed}:${s.cardbackDesign}` : ""}`}
                       card={card}
                       back={back}
                       hasSource={hasSource(card)}

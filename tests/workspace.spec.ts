@@ -2805,6 +2805,11 @@ const appliedScheme = (page: Page) =>
       )!.content,
     };
   });
+// Waits until queued events and the renders they cause have run.
+const settle = (page: Page) =>
+  page.evaluate(
+    () => new Promise((done) => requestAnimationFrame(() => setTimeout(done)))
+  );
 // The corner of an exported back is bleed, which continues the back's edge color.
 const exportedBackEdge = async (page: Page) => {
   const src = await embeddedJpeg(await saveDownload(page, "Export backs PDF"));
@@ -2849,9 +2854,18 @@ test("the color scheme restyles the site without changing the card back", async 
   });
   await page.keyboard.press("Escape");
   await expect(schemeRadio(page, "forest")).toBeHidden();
-  await expect(
-    page.getByRole("button", { name: "Color scheme", exact: true })
-  ).toBeFocused();
+  const paletteButton = page.getByRole("button", {
+    name: "Color scheme",
+    exact: true,
+  });
+  await expect(paletteButton).toBeFocused();
+  await paletteButton.click();
+  await page.locator(".sheet-label").first().click();
+  await expect(schemeRadio(page, "forest")).toBeHidden();
+  await settle(page);
+  expect(
+    await paletteButton.evaluate((button) => button === document.activeElement)
+  ).toBe(false);
   await expect(backRadio(page, "midnight")).toBeChecked();
 
   await page.reload();
@@ -2889,7 +2903,15 @@ test("the default card back is chosen in Print setup and is what exports", async
   const midnight = await exportedBackEdge(page);
   expect(midnight.b, JSON.stringify(midnight)).toBeGreaterThan(midnight.g);
 
+  // Changing the back keeps the front previews.
+  const front = page
+    .getByRole("button", { name: "Sol Ring, change artwork", exact: true })
+    .getByRole("img");
+  await expect(front).toBeVisible();
+  await front.evaluate((img) => (img.dataset.kept = "true"));
   await backRadio(page, "forest").check();
+  await settle(page);
+  expect(await front.getAttribute("data-kept")).toBe("true");
   await page.getByRole("button", { name: "Backs", exact: true }).click();
   await expect.poll(() => backs).toContain("/brand/card-back-forest.png");
   const forest = await exportedBackEdge(page);

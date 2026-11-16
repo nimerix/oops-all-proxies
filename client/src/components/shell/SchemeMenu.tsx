@@ -10,19 +10,7 @@ export function SchemeMenu() {
   const scheme = useSchemeStore((s) => s.scheme);
   const setScheme = useSchemeStore((s) => s.setScheme);
   return (
-    <div
-      id={SCHEME_MENU_ID}
-      className="scheme-menu"
-      popover="auto"
-      onToggle={(e) => {
-        // Safari drops focus when a radio is clicked, so closing the menu
-        // would leave it on the page body. Return it to the opener.
-        if (e.newState === "closed" && document.activeElement === document.body)
-          document
-            .querySelector<HTMLElement>(`[popovertarget="${SCHEME_MENU_ID}"]`)
-            ?.focus();
-      }}
-    >
+    <div id={SCHEME_MENU_ID} className="scheme-menu" popover="auto">
       <h2 id="scheme-heading" className="scheme-title">
         Color scheme
       </h2>
@@ -40,6 +28,9 @@ export function SchemeMenu() {
               value={id}
               checked={scheme === id}
               onChange={() => setScheme(id)}
+              // Safari does not focus radios on click. Focus inside the menu
+              // lets Escape return it to the palette button.
+              onClick={(e) => e.currentTarget.focus()}
             />
             <span className="scheme-swatch" data-scheme={id}>
               <BrandMark />
