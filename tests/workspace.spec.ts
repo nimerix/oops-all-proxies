@@ -2760,6 +2760,166 @@ test("confirmed resets leave focus on the page", async ({ page }) => {
   await expect.poll(focused).not.toBe("body");
 });
 
+const SCHEME_BARS = {
+  midnight: "#1D2152",
+  oxblood: "#5B1A21",
+  leather: "#5A3A1F",
+  forest: "#1F4A3A",
+  black: "#17171A",
+};
+const title = (id: string) => id[0].toUpperCase() + id.slice(1);
+const schemeRadio = (page: Page, id: string) =>
+  page
+    .getByRole("radiogroup", { name: "Color scheme", exact: true })
+    .getByRole("radio", { name: title(id), exact: true });
+const backRadio = (page: Page, id: string) =>
+  page
+    .getByRole("group", { name: "Default card back", exact: true })
+    .getByRole("radio", { name: title(id), exact: true });
+async function chooseScheme(page: Page, id: string) {
+  if (!(await schemeRadio(page, id).isVisible()))
+    await page
+      .getByRole("button", { name: "Color scheme", exact: true })
+      .click();
+  await schemeRadio(page, id).check();
+}
+const appliedScheme = (page: Page) =>
+  page.evaluate(() => {
+    const rgb = getComputedStyle(
+      document.querySelector(".top-bar")!
+    ).backgroundColor.match(/\d+/g)!;
+    return {
+      scheme: document.documentElement.dataset.scheme,
+      bar:
+        "#" +
+        rgb
+          .slice(0, 3)
+          .map((v) => Number(v).toString(16).padStart(2, "0"))
+          .join("")
+          .toUpperCase(),
+      icon: document
+        .querySelector('link[rel="icon"][type="image/svg+xml"]')!
+        .getAttribute("href"),
+      themeColor: document.querySelector<HTMLMetaElement>(
+        'meta[name="theme-color"]'
+      )!.content,
+    };
+  });
+// The corner of an exported back is bleed, which continues the back's edge color.
+const exportedBackEdge = async (page: Page) => {
+  const src = await embeddedJpeg(await saveDownload(page, "Export backs PDF"));
+  return page.evaluate(async (src) => {
+    const image = new Image();
+    image.src = src;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 4;
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(image, 0, 0);
+    const [r, g, b] = ctx.getImageData(2, 2, 1, 1).data;
+    return { r, g, b };
+  }, src);
+};
+
+test("the color scheme restyles the site without changing the card back", async ({
+  page,
+}) => {
+  const backs: string[] = [];
+  await page.route("**/brand/card-back-*.png", (route) => {
+    backs.push(new URL(route.request().url()).pathname);
+    return route.continue();
+  });
+  expect(await appliedScheme(page)).toEqual({
+    scheme: "midnight",
+    bar: SCHEME_BARS.midnight,
+    icon: "/brand/icons/midnight/favicon.svg",
+    themeColor: SCHEME_BARS.midnight,
+  });
+  await addDeck(page, "1 Sol Ring");
+  await setTwoSided(page, true);
+  await page.getByRole("button", { name: "Backs", exact: true }).click();
+  await expect.poll(() => backs).toContain("/brand/card-back-midnight.png");
+
+  await chooseScheme(page, "forest");
+  expect(await appliedScheme(page)).toEqual({
+    scheme: "forest",
+    bar: SCHEME_BARS.forest,
+    icon: "/brand/icons/forest/favicon.svg",
+    themeColor: SCHEME_BARS.forest,
+  });
+  await page.keyboard.press("Escape");
+  await expect(schemeRadio(page, "forest")).toBeHidden();
+  await expect(
+    page.getByRole("button", { name: "Color scheme", exact: true })
+  ).toBeFocused();
+  await expect(backRadio(page, "midnight")).toBeChecked();
+
+  await page.reload();
+  expect((await appliedScheme(page)).scheme).toBe("forest");
+  await chooseScheme(page, "forest");
+  await expect(schemeRadio(page, "forest")).toBeChecked();
+  expect(backs).not.toContain("/brand/card-back-forest.png");
+
+  await page
+    .getByRole("button", { name: "Reset settings", exact: true })
+    .click();
+  await confirmDialog(page, "Reset settings");
+  expect((await appliedScheme(page)).scheme).toBe("forest");
+
+  await page
+    .getByRole("button", { name: "Reset app data", exact: true })
+    .click();
+  await confirmDialog(page, "Delete saved data");
+  await expect
+    .poll(async () => (await appliedScheme(page)).scheme)
+    .toBe("midnight");
+});
+
+test("the default card back is chosen in Print setup and is what exports", async ({
+  page,
+}) => {
+  const backs: string[] = [];
+  await page.route("**/brand/card-back-*.png", (route) => {
+    backs.push(new URL(route.request().url()).pathname);
+    return route.continue();
+  });
+  await addDeck(page, "1 Sol Ring");
+  await setTwoSided(page, true);
+  await expect(backRadio(page, "midnight")).toBeChecked();
+  const midnight = await exportedBackEdge(page);
+  expect(midnight.b, JSON.stringify(midnight)).toBeGreaterThan(midnight.g);
+
+  await backRadio(page, "forest").check();
+  await page.getByRole("button", { name: "Backs", exact: true }).click();
+  await expect.poll(() => backs).toContain("/brand/card-back-forest.png");
+  const forest = await exportedBackEdge(page);
+  expect(forest.g, JSON.stringify(forest)).toBeGreaterThan(forest.b);
+  expect(forest.g, JSON.stringify(forest)).toBeGreaterThan(forest.r);
+  expect((await appliedScheme(page)).scheme).toBe("midnight");
+
+  await page.reload();
+  await expect(backRadio(page, "forest")).toBeChecked();
+  await page
+    .getByRole("button", { name: "Reset settings", exact: true })
+    .click();
+  await confirmDialog(page, "Reset settings");
+  await setTwoSided(page, true);
+  await expect(backRadio(page, "midnight")).toBeChecked();
+});
+
+test("every color scheme passes axe in both themes", async ({ page }) => {
+  await addDeck(page, "1 Sol Ring");
+  await setTwoSided(page, true);
+  for (const [id, bar] of Object.entries(SCHEME_BARS)) {
+    await chooseScheme(page, id);
+    for (const theme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+      expect((await appliedScheme(page)).bar, `${id}, ${theme}`).toBe(bar);
+      await expectNoAxeViolations(page, `${id}, ${theme}`);
+    }
+  }
+});
+
 async function fileTransfer(
   page: Page,
   file: { name: string; type: string; bytes: Buffer }

@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./styles/tokens.css";
+@import "./styles/schemes.css";
 @import "./styles/base.css";
 @import "./styles/shell.css";
 @import "./styles/deck.css";

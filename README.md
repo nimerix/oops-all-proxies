@@ -4,7 +4,10 @@ A browser workspace for building Magic: The Gathering proxy sheets. Paste a deck
 
 Use it at [www.oopsallproxies.com](https://www.oopsallproxies.com).
 
-The workspace has three parts. **Deck** lists the cards with their quantities. The **sheet** in the middle shows each page as it will print. **Print setup** holds paper, sides, cutting and card-back choices. **Export** is in the top bar at every screen size.
+The [brand assets and usage guide](docs/BRANDING.md) covers the logo, browser
+icons, color schemes and reversible default card backs.
+
+The workspace has three parts. **Deck** lists the cards with their quantities. The **sheet** in the middle shows each page as it will print. **Print setup** holds paper, sides, cutting and card-back choices, including five built-in default card backs. **Export** is in the top bar at every screen size.
 
 ## What it does
 
@@ -19,7 +22,7 @@ The workspace has three parts. **Deck** lists the cards with their quantities. T
 - Exports from one dialog. With **One-sided** chosen in Print setup it exports fronts. With **Two-sided** it exports either one file with fronts and backs alternating, for printers that duplex automatically, or separate fronts and backs files for flipping the stack by hand. Partially filled sheets are included. Larger exports can be split into files while keeping front/back pairs together. The dialog repeats the print instructions below.
 - Uses shared canvas and guide geometry for previews and PDFs. Cards trim to **63 × 88 mm**. PDF resolution is 600, 900 or 1200 DPI; higher output DPI cannot add detail to the source artwork.
 - Exports original images as ZIP and decklists as text. Long imports and exports show progress and support cancellation. Errors are visible instead of silently omitting cards.
-- Adapts to screen width: three columns on a wide screen, one side panel beside the sheet on a medium one, and one region at a time with a bottom bar on a phone. Follows the system light or dark appearance. Native buttons, dialogs and menus provide keyboard access.
+- Adapts to screen width: three columns on a wide screen, one side panel beside the sheet on a medium one, and one region at a time with a bottom bar on a phone. Follows the system light or dark appearance. The palette button in the top bar offers five color schemes for the site: Midnight, Oxblood, Leather, Forest and Black. Native buttons, dialogs and menus provide keyboard access.
 
 For duplex printing, use **100% / actual size**, with **long-edge flip in portrait** or **short-edge flip in landscape**. Test one sheet first: printer margins, registration and scaling vary. Bleed is extra artwork outside the 63 × 88 mm trim box.
 

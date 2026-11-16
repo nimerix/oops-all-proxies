@@ -4,7 +4,7 @@ import { resolveImageUrl } from "./imageUtils";
 import { bakedBleedCrop } from "./canvasProcessing";
 import { guessBucketDpiFromHeight } from "./dpiHelpers";
 import { cardSource } from "./cardSources";
-import { pixelDPIMap } from "../constants";
+import { defaultCardbackUrl, pixelDPIMap } from "../constants";
 import { getMpcImageUrl } from "./Mpc";
 
 it("parses quantities, printings and split cards while skipping section headings", () => {
@@ -21,7 +21,7 @@ it("parses quantities, printings and split cards while skipping section headings
 });
 it("loads card images directly and keeps MPC images on this site's API", () => {
   for (const src of [
-    "/cardback.png",
+    "/brand/card-back-midnight.png",
     "/api/cards/images/front?id=abc",
     "blob:abc",
     "data:image/png;base64,abc",
@@ -54,6 +54,27 @@ it("preserves the physical trim box for MPC images at zero and smaller bleed", (
       dpi,
       hasBleed: true,
     });
+});
+it("backs a single-faced card with the custom back, then the color scheme's back", () => {
+  const card = {
+    uuid: "1",
+    name: "Sol Ring",
+    imageUrls: ["front"],
+    isUserUpload: false,
+  };
+  const images = { originalSelectedImages: {} };
+  expect(cardSource(card, images, true).source).toBe(
+    "/brand/card-back-midnight.png"
+  );
+  const forest = defaultCardbackUrl("forest");
+  expect(cardSource(card, images, true, null, true, forest)).toEqual({
+    source: "/brand/card-back-forest.png",
+    hasBakedBleed: false,
+  });
+  expect(cardSource(card, images, true, "data:custom", true, forest)).toEqual({
+    source: "data:custom",
+    hasBakedBleed: true,
+  });
 });
 it("uses the currently selected face and the opposite back", () => {
   const card = {

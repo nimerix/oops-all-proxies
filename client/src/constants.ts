@@ -1,8 +1,17 @@
 import type { CardDimensions } from "./types/Card";
+import { DEFAULT_SCHEME, type SchemeId } from "./schemes";
 
 const fromEnv = import.meta.env.VITE_API_BASE as string | undefined;
 
 export const API_BASE = (fromEnv && fromEnv.replace(/\/$/, "")) || "";
+
+// Each color scheme has its own default card back. Rename a file when its
+// artwork changes, so a cached copy of the old back is never used.
+export const defaultCardbackUrl = (scheme: SchemeId) =>
+  `/brand/card-back-${scheme}.png`;
+export const defaultCardbackPreviewUrl = (scheme: SchemeId) =>
+  `/brand/card-back-${scheme}.svg`;
+export const DEFAULT_CARDBACK_URL = defaultCardbackUrl(DEFAULT_SCHEME);
 
 // Helper to safely prefix with API_BASE (or keep relative)
 export const apiUrl = (path: string) => {

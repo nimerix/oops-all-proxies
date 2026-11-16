@@ -3,7 +3,7 @@ import { Loader } from "./components/Loader";
 import { ConfirmDialog } from "./components/feedback/ConfirmDialog";
 import { Notifications } from "./components/feedback/Notifications";
 import ProxyBuilderPage from "./pages/ProxyBuilderPage";
-import { useCardsStore, useSettingsStore } from "./store";
+import { useCardsStore, useSchemeStore, useSettingsStore } from "./store";
 import {
   continueWithoutSaving,
   reportStorageError,
@@ -126,6 +126,7 @@ function App() {
                       cards.storage.removeItem(cards.name),
                       settings.storage.removeItem(settings.name),
                     ]);
+                    useSchemeStore.getState().resetScheme();
                     window.location.reload();
                   } catch (error) {
                     reportStorageError(

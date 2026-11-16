@@ -1,5 +1,6 @@
 import type { CardOption } from "../types/Card";
 import { isUploadedFileToken } from "./imageUtils";
+import { DEFAULT_CARDBACK_URL } from "../constants";
 
 export type ImageSources = {
   originalSelectedImages: Record<string, string>;
@@ -12,7 +13,8 @@ export function cardSource(
   images: ImageSources,
   back = false,
   customBack?: string | null,
-  customHasBleed = false
+  customHasBleed = false,
+  defaultBack = DEFAULT_CARDBACK_URL
 ) {
   let source: string | File | undefined;
   let hasBakedBleed = !!card.hasBakedBleed;
@@ -28,7 +30,7 @@ export function cardSource(
         card.faces?.[(card.currentFaceIndex ?? 0) === 0 ? 1 : 0]?.imageUrl;
       hasBakedBleed = false;
     } else {
-      source = customBack || "/cardback.png";
+      source = customBack || defaultBack;
       hasBakedBleed = !!customBack && customHasBleed;
     }
   } else {
